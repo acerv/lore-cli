@@ -13,25 +13,35 @@ pub struct Group {
 
 /// Parse a patch subject into its `(version, series-key)`.
 ///
-/// The version comes from a `vN` token inside the leading `[...]` tag (default
-/// 1); the key is the normalized title after the tag, so different versions of
-/// the same patch share a key.
+/// All leading `[...]` tags are stripped (so a list prefix like `[LTP]` before
+/// the `[PATCH vN ...]` tag is handled); the version is the `vN` token found in
+/// any of them (default 1), and the key is the normalized title that follows.
 pub fn parse(subject: &str) -> (u32, String) {
-    let s = subject.trim();
-    if let Some(rest) = s.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            let tag = &rest[..end];
-            let title = rest[end + 1..].trim();
-            if !title.is_empty() {
-                let version = tag
-                    .split(|c: char| c.is_whitespace() || c == ',')
-                    .find_map(parse_version_token)
-                    .unwrap_or(1);
-                return (version, normalize(title));
+    let mut rest = subject.trim();
+    let mut version = 1;
+    let mut found_version = false;
+
+    while let Some(inner) = rest.strip_prefix('[') {
+        let Some(close) = inner.find(']') else {
+            break;
+        };
+        if !found_version {
+            if let Some(v) = inner[..close]
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .find_map(parse_version_token)
+            {
+                version = v;
+                found_version = true;
             }
         }
+        rest = inner[close + 1..].trim_start();
     }
-    (1, normalize(s))
+
+    let title = rest.trim();
+    if title.is_empty() {
+        return (version, normalize(subject.trim()));
+    }
+    (version, normalize(title))
 }
 
 fn parse_version_token(token: &str) -> Option<u32> {
@@ -112,6 +122,29 @@ mod tests {
     #[test]
     fn parse_ignores_case_and_whitespace_in_title() {
         assert_eq!(parse("[PATCH V4]   Mm:   Fix "), (4, "mm: fix".into()));
+    }
+
+    #[test]
+    fn parse_strips_leading_list_tag() {
+        assert_eq!(
+            parse("[LTP] [PATCH v2 2/2] syscalls/foo: add test"),
+            (2, "syscalls/foo: add test".into())
+        );
+        assert_eq!(
+            parse("[LTP] [PATCH 2/2] syscalls/foo: add test"),
+            (1, "syscalls/foo: add test".into())
+        );
+    }
+
+    #[test]
+    fn groups_versions_behind_a_list_tag() {
+        let groups = group([
+            "[LTP] [PATCH v2 2/2] syscalls/foo: add test",
+            "[LTP] [PATCH 2/2] syscalls/foo: add test",
+        ]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].head, 0); // v2
+        assert_eq!(groups[0].children, vec![1]); // v1
     }
 
     #[test]
