@@ -24,8 +24,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let tick = app.tick;
     if app.active_tab == 0 {
         render_list(frame, app, areas[2]);
-    } else if let Some(tab) = app.tabs.get_mut(app.active_tab - 1) {
-        render_thread(frame, tab, areas[2], tick);
+    } else {
+        let base = format!("{}/{}", app.config.lore.server, app.config.lore.project);
+        if let Some(tab) = app.tabs.get_mut(app.active_tab - 1) {
+            render_thread(frame, tab, areas[2], tick, &base);
+        }
     }
 
     render_statusbar(frame, app, areas[3]);
@@ -143,7 +146,7 @@ fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
 
 // ----- thread view ----------------------------------------------------------
 
-fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) {
+fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64, base: &str) {
     if tab.loading {
         let spin = SPINNER[(tick % 4) as usize];
         frame.render_widget(
@@ -164,7 +167,7 @@ fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) 
         return;
     }
 
-    let lines = build_thread_lines(&tab.emails, area.width as usize);
+    let lines = build_thread_lines(&tab.emails, area.width as usize, base);
 
     // No wrapping: one row per logical line, so the count is exact and paging
     // never overshoots. Over-long lines are clipped at the right edge.
@@ -176,7 +179,7 @@ fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) 
     frame.render_widget(Paragraph::new(lines).scroll((tab.scroll, 0)), area);
 }
 
-fn build_thread_lines(emails: &[Email], width: usize) -> Vec<Line<'static>> {
+fn build_thread_lines(emails: &[Email], width: usize, base: &str) -> Vec<Line<'static>> {
     let depths = reply_depths(emails);
     let mut lines: Vec<Line> = Vec::new();
 
@@ -190,6 +193,7 @@ fn build_thread_lines(emails: &[Email], width: usize) -> Vec<Line<'static>> {
         lines.push(header_line(&indent, "From : ", &email.from));
         lines.push(header_line(&indent, "Date : ", &email.date));
         lines.push(header_line(&indent, "Subj : ", &email.subject));
+        lines.push(link_line(&indent, base, &email.message_id));
         lines.push(Line::raw(""));
 
         let mut in_diff = false;
@@ -215,6 +219,19 @@ fn header_line(indent: &str, label: &str, value: &str) -> Line<'static> {
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw(sanitize(value)),
+    ])
+}
+
+fn link_line(indent: &str, base: &str, message_id: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{indent}Link : "),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{base}/{message_id}/"),
+            Style::default().fg(Color::Blue),
+        ),
     ])
 }
 
@@ -513,6 +530,10 @@ mod tests {
 
         assert!(text.contains("Alice"), "thread should show the sender");
         assert!(text.contains("Reviewed-by: Bob"), "thread should show the body");
+        assert!(
+            text.contains("lore.kernel.org/test/id0@example.com"),
+            "thread should show the lore permalink after Subj"
+        );
         assert!(!text.contains('\t'), "tabs must be expanded, never rendered raw");
     }
 
