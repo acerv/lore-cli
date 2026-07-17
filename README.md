@@ -22,6 +22,7 @@ whole threads in closable, scrollable tabs.
 - Multiple tabs; the patch list is always tab 0.
 - Patch-set grouping: a cover letter (`[PATCH 0/N]`) folds its series patches
   beneath it (Space to expand/collapse); standalone patches open with Enter.
+- Live search: press `/` to filter the list by subject as you type.
 - Background status probing (visible rows first) with bounded concurrency and an
   on-disk cache.
 - Incremental pagination: more patches load as you scroll to the bottom.
@@ -77,6 +78,7 @@ Patch list (tab 0):
 | PageUp / PageDown         | jump 10                         |
 | Ctrl+d / Ctrl+u           | half-page down / up             |
 | Enter / → / l             | open the selected thread        |
+| /                         | live search (Esc clears)        |
 | Space                     | expand / collapse a patch-set   |
 | m                         | load more patches (auto at end) |
 | Ctrl+n / Ctrl+p           | next / previous tab             |

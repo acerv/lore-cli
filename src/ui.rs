@@ -315,12 +315,27 @@ fn is_trailer(line: &str) -> bool {
 // ----- status bar -----------------------------------------------------------
 
 fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
+    // While typing a search, the input takes over the status bar.
+    if app.active_tab == 0 && app.search_active {
+        let query = app.search.as_deref().unwrap_or("");
+        frame.render_widget(
+            Paragraph::new(format!(" /{query}")).style(Style::default().fg(Color::Yellow)),
+            area,
+        );
+        let cursor_x = (area.x + 2 + query.chars().count() as u16).min(area.right().saturating_sub(1));
+        frame.set_cursor_position((cursor_x, area.y));
+        return;
+    }
+
     let widget = if app.active_tab == 0 {
         if let Some(err) = &app.error {
             Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
         } else {
             let mut spans = vec![
-                Span::styled(" ↑/↓ move  Enter open  Space fold  Ctrl+n/p tab  q quit", dim()),
+                Span::styled(
+                    " ↑/↓ move  Enter open  / search  Space fold  Ctrl+n/p tab  q quit",
+                    dim(),
+                ),
                 Span::styled("  |  ", dim()),
             ];
             if app.loading_patches {
@@ -335,10 +350,18 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled(" +more", Style::default().fg(Color::Yellow)));
                 }
             }
-            spans.push(Span::styled("  |  ", dim()));
-            spans.push(Span::styled("merged", Style::default().fg(Color::Green)));
-            spans.push(Span::styled("  ", dim()));
-            spans.push(Span::styled("reviewed", Style::default().fg(Color::Yellow)));
+            if let Some(query) = &app.search {
+                spans.push(Span::styled("  |  ", dim()));
+                spans.push(Span::styled(
+                    format!("search: {query}"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else {
+                spans.push(Span::styled("  |  ", dim()));
+                spans.push(Span::styled("merged", Style::default().fg(Color::Green)));
+                spans.push(Span::styled("  ", dim()));
+                spans.push(Span::styled("reviewed", Style::default().fg(Color::Yellow)));
+            }
             Paragraph::new(Line::from(spans))
         }
     } else {

@@ -106,6 +106,10 @@ pub struct App {
     requested: HashSet<String>,
     /// Height of the list viewport captured on the last render.
     pub list_height: u16,
+    /// Active list search query (subject substring), if any.
+    pub search: Option<String>,
+    /// Whether the search box is currently being typed into.
+    pub search_active: bool,
 }
 
 impl App {
@@ -133,6 +137,8 @@ impl App {
             status_sem,
             requested: HashSet::new(),
             list_height: 0,
+            search: None,
+            search_active: false,
         }
     }
 
@@ -311,6 +317,28 @@ impl App {
 
     fn rebuild_rows(&mut self) {
         self.rows.clear();
+
+        // A live search shows a flat, filtered list (case-insensitive subject).
+        let filter = self
+            .search
+            .as_ref()
+            .filter(|q| !q.is_empty())
+            .map(|q| q.to_lowercase());
+        if let Some(query) = filter {
+            for (i, patch) in self.patches.iter().enumerate() {
+                if patch.subject.to_lowercase().contains(&query) {
+                    self.rows.push(Row {
+                        patch: i,
+                        depth: 0,
+                        children: 0,
+                        expanded: false,
+                        group: 0,
+                    });
+                }
+            }
+            return;
+        }
+
         for (group_index, group) in self.groups.iter().enumerate() {
             let key = self.patches[group.head].message_id.clone();
             let expanded = self.expanded.contains(&key);
@@ -518,8 +546,15 @@ impl App {
     }
 
     fn handle_list_key(&mut self, key: KeyEvent, ctrl: bool) {
+        if self.search_active {
+            self.handle_search_key(key, ctrl);
+            return;
+        }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc if self.search.is_some() => self.clear_search(),
+            KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('/') => self.start_search(),
             KeyCode::Char('d') if ctrl => {
                 self.select_by(self.half_page());
                 self.maybe_load_more();
@@ -545,6 +580,50 @@ impl App {
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
             _ => {}
         }
+    }
+
+    // ----- live search -----------------------------------------------------
+
+    fn handle_search_key(&mut self, key: KeyEvent, ctrl: bool) {
+        match key.code {
+            KeyCode::Esc => self.clear_search(),
+            KeyCode::Enter => self.search_active = false, // commit, keep the filter
+            KeyCode::Backspace => {
+                if let Some(query) = self.search.as_mut() {
+                    query.pop();
+                }
+                self.apply_search();
+            }
+            KeyCode::Down => self.select_next(),
+            KeyCode::Up => self.select_prev(),
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(query) = self.search.as_mut() {
+                    query.push(c);
+                }
+                self.apply_search();
+            }
+            _ => {}
+        }
+    }
+
+    fn start_search(&mut self) {
+        if self.search.is_none() {
+            self.search = Some(String::new());
+        }
+        self.search_active = true;
+        self.apply_search();
+    }
+
+    fn clear_search(&mut self) {
+        self.search = None;
+        self.search_active = false;
+        self.apply_search();
+    }
+
+    fn apply_search(&mut self) {
+        self.rebuild_rows();
+        let selection = if self.rows.is_empty() { None } else { Some(0) };
+        self.list_state.select(selection);
     }
 
     fn handle_thread_key(&mut self, key: KeyEvent, ctrl: bool) {
@@ -758,5 +837,30 @@ mod tests {
         assert_eq!(app.list_state.selected(), Some(10));
         app.handle_crossterm(ctrl('u'));
         assert_eq!(app.list_state.selected(), Some(5));
+    }
+
+    #[test]
+    fn slash_starts_live_search() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(0);
+        app.patches = vec![
+            patch("[PATCH] mm: fix foo", "a@x"),
+            patch("[PATCH] net: bar", "b@x"),
+            patch("[PATCH] mm: other", "c@x"),
+        ];
+        app.rebuild_view();
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        app.handle_crossterm(key('/'));
+        assert!(app.search_active);
+        app.handle_crossterm(key('m'));
+        app.handle_crossterm(key('m'));
+        assert_eq!(app.search.as_deref(), Some("mm"));
+        assert_eq!(app.rows.len(), 2); // two "mm:" subjects
+
+        app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!app.search_active);
+        assert!(app.search.is_none());
+        assert_eq!(app.rows.len(), 3);
     }
 }
