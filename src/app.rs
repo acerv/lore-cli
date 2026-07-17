@@ -62,6 +62,8 @@ pub struct App {
     pub patches: Vec<PatchEntry>,
     pub list_state: ListState,
     pub loading_patches: bool,
+    pub loading_more: bool,
+    pub all_loaded: bool,
     pub error: Option<String>,
     /// Open thread tabs. Tab index 0 is the patch list; tab N is `tabs[N - 1]`.
     pub tabs: Vec<ThreadTab>,
@@ -85,6 +87,8 @@ impl App {
             patches: Vec::new(),
             list_state,
             loading_patches: true,
+            loading_more: false,
+            all_loaded: false,
             error: None,
             tabs: Vec::new(),
             active_tab: 0,
@@ -113,11 +117,31 @@ impl App {
         match result {
             Ok(patches) => {
                 self.patches = patches;
+                self.all_loaded = self.patches.len() < self.config.ui.page_size;
                 let selection = if self.patches.is_empty() { None } else { Some(0) };
                 self.list_state.select(selection);
-                self.spawn_status_fetches();
+                self.spawn_status_fetches(0);
             }
             Err(err) => self.error = Some(err),
+        }
+    }
+
+    pub fn on_more_loaded(&mut self, result: Result<Vec<PatchEntry>, String>) {
+        self.loading_more = false;
+        match result {
+            Ok(mut more) => {
+                if more.len() < self.config.ui.page_size {
+                    self.all_loaded = true;
+                }
+                if more.is_empty() {
+                    return;
+                }
+                let start = self.patches.len();
+                self.patches.append(&mut more);
+                self.spawn_status_fetches(start);
+            }
+            // A failed "load more" is non-fatal: just allow retrying later.
+            Err(_) => {}
         }
     }
 
@@ -127,9 +151,9 @@ impl App {
         }
     }
 
-    /// Probe every patch's thread (bounded by a semaphore) to color the list.
-    fn spawn_status_fetches(&self) {
-        for patch in &self.patches {
+    /// Probe patches from `start` onward (bounded by a semaphore) to color them.
+    fn spawn_status_fetches(&self, start: usize) {
+        for patch in self.patches.iter().skip(start) {
             if patch.status != PatchStatus::Unknown {
                 continue;
             }
@@ -155,6 +179,33 @@ impl App {
         match result {
             Ok(emails) => tab.emails = emails,
             Err(err) => tab.error = Some(err),
+        }
+    }
+
+    /// Request the next page of patches, if there is one and none is in flight.
+    fn load_more(&mut self) {
+        if self.loading_patches || self.loading_more || self.all_loaded {
+            return;
+        }
+        self.loading_more = true;
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        let offset = self.patches.len();
+        tokio::spawn(async move {
+            let result = client
+                .fetch_patch_list(offset)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::MoreLoaded(result));
+        });
+    }
+
+    /// Load another page once the selection nears the end of the list.
+    fn maybe_load_more(&mut self) {
+        if let Some(selected) = self.list_state.selected() {
+            if selected + 1 >= self.patches.len() {
+                self.load_more();
+            }
         }
     }
 
@@ -315,12 +366,22 @@ impl App {
     fn handle_list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.select_next();
+                self.maybe_load_more();
+            }
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Home | KeyCode::Char('g') => self.select_first(),
-            KeyCode::End | KeyCode::Char('G') => self.select_last(),
-            KeyCode::PageDown => self.select_by(10),
+            KeyCode::End | KeyCode::Char('G') => {
+                self.select_last();
+                self.maybe_load_more();
+            }
+            KeyCode::PageDown => {
+                self.select_by(10);
+                self.maybe_load_more();
+            }
             KeyCode::PageUp => self.select_by(-10),
+            KeyCode::Char('m') => self.load_more(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
             _ => {}
         }
@@ -441,5 +502,13 @@ mod tests {
         assert_eq!(tab.scroll, 15); // 25 - 10
         tab.scroll_lines(-1000);
         assert_eq!(tab.scroll, 0);
+    }
+
+    #[test]
+    fn load_more_respects_all_loaded() {
+        let mut app = test_app(3);
+        app.all_loaded = true;
+        app.load_more();
+        assert!(!app.loading_more, "must not start a fetch when fully loaded");
     }
 }

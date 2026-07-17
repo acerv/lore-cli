@@ -1,8 +1,4 @@
 //! lore-cli: a terminal UI for browsing lore/public-inbox patches.
-// NOTE: dead_code is allowed while the app is wired up incrementally across
-// commits; this attribute is removed at the polish step once every module is
-// in use.
-#![allow(dead_code)]
 
 mod app;
 mod cache;
@@ -106,6 +102,7 @@ async fn run(
             AppEvent::Input(input) => app.handle_crossterm(input),
             AppEvent::Tick => app.on_tick(),
             AppEvent::PatchesLoaded(result) => app.on_patches_loaded(result),
+            AppEvent::MoreLoaded(result) => app.on_more_loaded(result),
             AppEvent::StatusUpdated { message_id, status } => {
                 app.on_status_updated(&message_id, status)
             }

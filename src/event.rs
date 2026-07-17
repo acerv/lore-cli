@@ -10,6 +10,8 @@ pub enum AppEvent {
     Tick,
     /// The initial patch list finished loading.
     PatchesLoaded(Result<Vec<PatchEntry>, String>),
+    /// A subsequent page of patches finished loading.
+    MoreLoaded(Result<Vec<PatchEntry>, String>),
     /// A background status probe determined a patch's merge/review state.
     StatusUpdated { message_id: String, status: PatchStatus },
     /// A thread requested by opening a tab finished loading.

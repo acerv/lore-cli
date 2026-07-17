@@ -33,7 +33,14 @@ fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
     let patches_title = if app.loading_patches {
         " Patches ".to_string()
     } else {
-        format!(" Patches ({}) ", app.patches.len())
+        let more = if app.loading_more {
+            "+"
+        } else if app.all_loaded {
+            ""
+        } else {
+            "…"
+        };
+        format!(" Patches ({}{more}) ", app.patches.len())
     };
     let mut titles: Vec<Line> = vec![Line::from(patches_title)];
     for tab in &app.tabs {
@@ -164,35 +171,64 @@ fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) 
 
 fn build_thread_lines(emails: &[Email], width: usize) -> Vec<Line<'static>> {
     let label = Style::default().fg(Color::DarkGray);
+    let depths = reply_depths(emails);
     let mut lines: Vec<Line> = Vec::new();
 
     for (i, email) in emails.iter().enumerate() {
+        let indent = "  ".repeat(depths[i].min(6));
         if i > 0 {
             lines.push(Line::raw(""));
             lines.push(Line::styled("─".repeat(width.max(1)), label));
             lines.push(Line::raw(""));
         }
         lines.push(Line::from(vec![
-            Span::styled("From: ", label),
+            Span::styled(format!("{indent}From: "), label),
             Span::styled(
                 email.from.clone(),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Date: ", label),
+            Span::styled(format!("{indent}Date: "), label),
             Span::raw(email.date.clone()),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Subj: ", label),
+            Span::styled(format!("{indent}Subj: "), label),
             Span::raw(email.subject.clone()),
         ]));
         lines.push(Line::raw(""));
         for raw in email.body.lines() {
-            lines.push(style_body_line(raw));
+            let mut line = style_body_line(raw);
+            if !indent.is_empty() {
+                line.spans.insert(0, Span::raw(indent.clone()));
+            }
+            lines.push(line);
         }
     }
     lines
+}
+
+/// Compute a reply-nesting depth per email from `In-Reply-To` links.
+fn reply_depths(emails: &[Email]) -> Vec<usize> {
+    use std::collections::HashMap;
+    let index: HashMap<&str, usize> = emails
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.message_id.as_str(), i))
+        .collect();
+    let mut depths = vec![0usize; emails.len()];
+    for i in 0..emails.len() {
+        if let Some(parent) = emails[i]
+            .in_reply_to
+            .as_deref()
+            .and_then(|irt| index.get(irt).copied())
+        {
+            if parent < i {
+                depths[i] = depths[parent] + 1;
+            }
+        }
+    }
+    depths
 }
 
 /// Apply light syntax coloring to a single body line.
@@ -347,6 +383,25 @@ mod tests {
         assert_eq!(style_body_line("Reviewed-by: X").style.fg, Some(Color::Green));
         assert_eq!(style_body_line("Merged, thanks!").style.fg, Some(Color::Green));
         assert_eq!(style_body_line("normal text").style.fg, None);
+    }
+
+    #[test]
+    fn reply_depths_follow_in_reply_to() {
+        let mk = |id: &str, irt: Option<&str>| Email {
+            from: "x".into(),
+            date: "d".into(),
+            subject: "s".into(),
+            message_id: id.into(),
+            in_reply_to: irt.map(str::to_string),
+            body: String::new(),
+        };
+        let emails = vec![
+            mk("root", None),
+            mk("a", Some("root")),
+            mk("b", Some("a")),
+            mk("c", Some("root")),
+        ];
+        assert_eq!(reply_depths(&emails), vec![0, 1, 2, 1]);
     }
 
     #[test]
