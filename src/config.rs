@@ -9,6 +9,8 @@ pub struct Config {
     pub lore: LoreConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub status: StatusConfig,
 }
 
 /// Which lore/public-inbox server and project (mailing list) to browse.
@@ -46,6 +48,27 @@ fn default_status_concurrency() -> usize {
     6
 }
 
+/// How patch status is detected from a thread.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StatusConfig {
+    /// Case-insensitive text marking a patch as merged (green). Different
+    /// subsystems phrase this differently (e.g. "Applied, thanks").
+    #[serde(default = "default_merged_marker")]
+    pub merged_marker: String,
+}
+
+impl Default for StatusConfig {
+    fn default() -> Self {
+        Self {
+            merged_marker: default_merged_marker(),
+        }
+    }
+}
+
+fn default_merged_marker() -> String {
+    "Merged, thanks".to_string()
+}
+
 impl Config {
     /// Load and validate a configuration file.
     pub fn load(path: &Path) -> Result<Self> {
@@ -75,6 +98,38 @@ impl Config {
         if self.ui.status_concurrency == 0 {
             self.ui.status_concurrency = default_status_concurrency();
         }
+        if self.status.merged_marker.trim().is_empty() {
+            self.status.merged_marker = default_merged_marker();
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minimal_config_with_defaults() {
+        let toml = r#"
+            [lore]
+            server = "https://lore.kernel.org/"
+            project = "amd-gfx"
+        "#;
+        let mut config: Config = toml::from_str(toml).unwrap();
+        config.normalize().unwrap();
+
+        assert_eq!(config.lore.server, "https://lore.kernel.org"); // trailing slash trimmed
+        assert_eq!(config.lore.project, "amd-gfx");
+        assert_eq!(config.ui.page_size, 200);
+        assert_eq!(config.ui.status_concurrency, 6);
+        assert_eq!(config.status.merged_marker, "Merged, thanks");
+    }
+
+    #[test]
+    fn rejects_empty_project() {
+        let toml = "[lore]\nserver = \"https://x\"\nproject = \"\"\n";
+        let mut config: Config = toml::from_str(toml).unwrap();
+        assert!(config.normalize().is_err());
     }
 }

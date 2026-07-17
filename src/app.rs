@@ -153,6 +153,7 @@ impl App {
 
     /// Probe patches from `start` onward (bounded by a semaphore) to color them.
     fn spawn_status_fetches(&self, start: usize) {
+        let marker = self.config.status.merged_marker.clone();
         for patch in self.patches.iter().skip(start) {
             if patch.status != PatchStatus::Unknown {
                 continue;
@@ -161,10 +162,11 @@ impl App {
             let tx = self.tx.clone();
             let semaphore = self.status_sem.clone();
             let message_id = patch.message_id.clone();
+            let marker = marker.clone();
             tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await.ok();
                 if let Ok(emails) = client.fetch_thread(&message_id).await {
-                    let status = crate::lore::status::compute_status(&emails);
+                    let status = crate::lore::status::compute_status(&emails, &marker);
                     let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
                 }
             });
@@ -414,7 +416,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LoreConfig, UiConfig};
+    use crate::config::{Config, LoreConfig, StatusConfig, UiConfig};
     use crate::model::PatchStatus;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -425,6 +427,7 @@ mod tests {
                 project: "test".into(),
             },
             ui: UiConfig::default(),
+            status: StatusConfig::default(),
         };
         let client = LoreClient::new(&config.lore).unwrap();
         let (tx, _rx) = unbounded_channel();

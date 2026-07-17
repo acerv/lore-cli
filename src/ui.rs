@@ -306,7 +306,7 @@ fn fit(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::config::{Config, LoreConfig, UiConfig};
+    use crate::config::{Config, LoreConfig, StatusConfig, UiConfig};
     use crate::lore::LoreClient;
     use crate::model::PatchEntry;
     use ratatui::backend::TestBackend;
@@ -321,6 +321,7 @@ mod tests {
                 project: "test".into(),
             },
             ui: UiConfig::default(),
+            status: StatusConfig::default(),
         };
         let client = LoreClient::new(&config.lore).unwrap();
         let (tx, _rx) = unbounded_channel();
