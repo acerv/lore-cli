@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ThreadTab};
@@ -12,51 +12,35 @@ const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 pub fn render(frame: &mut Frame, app: &mut App) {
     let areas = Layout::vertical([
         Constraint::Length(1), // tab bar
+        Constraint::Length(1), // separator rule
         Constraint::Min(0),    // body
-        Constraint::Length(1), // help bar
+        Constraint::Length(1), // status bar
     ])
     .split(frame.area());
 
     render_tabbar(frame, app, areas[0]);
+    frame.render_widget(Block::default().borders(Borders::TOP), areas[1]);
 
     let tick = app.tick;
     if app.active_tab == 0 {
-        render_list(frame, app, areas[1]);
+        render_list(frame, app, areas[2]);
     } else if let Some(tab) = app.tabs.get_mut(app.active_tab - 1) {
-        render_thread(frame, tab, areas[1], tick);
+        render_thread(frame, tab, areas[2], tick);
     }
 
-    render_helpbar(frame, app, areas[2]);
+    render_statusbar(frame, app, areas[3]);
 }
 
 fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
-    let patches_title = if app.loading_patches {
-        " Patches ".to_string()
-    } else {
-        let more = if app.loading_more {
-            "+"
-        } else if app.all_loaded {
-            ""
-        } else {
-            "…"
-        };
-        format!(" Patches ({}{more}) ", app.patches.len())
-    };
-    let mut titles: Vec<Line> = vec![Line::from(patches_title)];
-    for tab in &app.tabs {
-        titles.push(Line::from(format!(" {} ", fit(&tab.subject, 24))));
-    }
+    let titles: Vec<Line> = std::iter::once(format!(" {} ", app.config.lore.project))
+        .chain(app.tabs.iter().map(|t| format!(" {} ", fit(&t.subject, 20))))
+        .map(Line::from)
+        .collect();
 
     let tabs = Tabs::new(titles)
         .select(app.active_tab)
-        .style(Style::default().bg(Color::Blue).fg(Color::Gray))
-        .highlight_style(
-            Style::default()
-                .bg(Color::White)
-                .fg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider("");
+        .style(Style::default().fg(Color::DarkGray))
+        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     frame.render_widget(tabs, area);
 }
 
@@ -65,7 +49,10 @@ fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
 fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.loading_patches {
         let spin = SPINNER[(app.tick % 4) as usize];
-        frame.render_widget(Paragraph::new(format!(" Loading patches {spin}")), area);
+        frame.render_widget(
+            Paragraph::new(format!(" Loading patches {spin}")).style(dim()),
+            area,
+        );
         return;
     }
     if let Some(err) = &app.error {
@@ -76,22 +63,24 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     if app.patches.is_empty() {
-        frame.render_widget(Paragraph::new(" No patches found."), area);
+        frame.render_widget(Paragraph::new(" No patches found.").style(dim()), area);
         return;
     }
 
-    let text_width = area.width.saturating_sub(2) as usize; // room for highlight symbol
+    let width = area.width as usize;
     let items: Vec<ListItem> = app
         .patches
         .iter()
-        .map(|patch| {
-            ListItem::new(format_row(patch, text_width))
-                .style(Style::default().fg(status_color(patch.status)))
-        })
+        .map(|patch| ListItem::new(patch_row(patch, width)))
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
@@ -109,15 +98,16 @@ fn status_marker(status: PatchStatus) -> char {
     match status {
         PatchStatus::Merged => 'M',
         PatchStatus::Reviewed => 'R',
-        PatchStatus::Normal => ' ',
-        PatchStatus::Unknown => '·',
+        PatchStatus::Normal | PatchStatus::Unknown => ' ',
     }
 }
 
-fn format_row(patch: &PatchEntry, width: usize) -> String {
+/// Build one patch row: "M subject … author date", subject in the status color.
+fn patch_row(patch: &PatchEntry, width: usize) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
 
+    let color = status_color(patch.status);
     let marker = status_marker(patch.status);
     let date = patch
         .updated
@@ -128,13 +118,18 @@ fn format_row(patch: &PatchEntry, width: usize) -> String {
     } else {
         &patch.author_name
     };
-    let author = fit(author_raw, AUTHOR_W);
+    let author = fit(&sanitize(author_raw), AUTHOR_W);
 
-    // marker(1) + ' '(1) + subject + ' '(1) + author + ' '(1) + date
-    let subject_w = width.saturating_sub(2 + AUTHOR_W + DATE_W + 2).max(4);
+    // symbol(2) + marker(2) + subject + ' '(1) + author + ' '(1) + date
+    let subject_w = width.saturating_sub(2 + 2 + AUTHOR_W + DATE_W + 2).max(4);
     let subject = fit(&patch.subject, subject_w);
 
-    format!("{marker} {subject:<subject_w$} {author:<AUTHOR_W$} {date}")
+    Line::from(vec![
+        Span::styled(format!("{marker} "), Style::default().fg(color)),
+        Span::styled(format!("{subject:<subject_w$} "), Style::default().fg(color)),
+        Span::styled(format!("{author:<AUTHOR_W$} "), dim()),
+        Span::styled(date, Style::default().fg(Color::Cyan)),
+    ])
 }
 
 // ----- thread view ----------------------------------------------------------
@@ -142,7 +137,10 @@ fn format_row(patch: &PatchEntry, width: usize) -> String {
 fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) {
     if tab.loading {
         let spin = SPINNER[(tick % 4) as usize];
-        frame.render_widget(Paragraph::new(format!(" Loading thread {spin}")), area);
+        frame.render_widget(
+            Paragraph::new(format!(" Loading thread {spin}")).style(dim()),
+            area,
+        );
         return;
     }
     if let Some(err) = &tab.error {
@@ -153,7 +151,7 @@ fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) 
         return;
     }
     if tab.emails.is_empty() {
-        frame.render_widget(Paragraph::new(" (empty thread)"), area);
+        frame.render_widget(Paragraph::new(" (empty thread)").style(dim()), area);
         return;
     }
 
@@ -170,7 +168,6 @@ fn render_thread(frame: &mut Frame, tab: &mut ThreadTab, area: Rect, tick: u64) 
 }
 
 fn build_thread_lines(emails: &[Email], width: usize) -> Vec<Line<'static>> {
-    let label = Style::default().fg(Color::DarkGray);
     let depths = reply_depths(emails);
     let mut lines: Vec<Line> = Vec::new();
 
@@ -178,34 +175,38 @@ fn build_thread_lines(emails: &[Email], width: usize) -> Vec<Line<'static>> {
         let indent = "  ".repeat(depths[i].min(6));
         if i > 0 {
             lines.push(Line::raw(""));
-            lines.push(Line::styled("─".repeat(width.max(1)), label));
+            lines.push(Line::styled("─".repeat(width.max(1)), dim()));
             lines.push(Line::raw(""));
         }
-        lines.push(Line::from(vec![
-            Span::styled(format!("{indent}From: "), label),
-            Span::styled(
-                email.from.clone(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(format!("{indent}Date: "), label),
-            Span::raw(email.date.clone()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(format!("{indent}Subj: "), label),
-            Span::raw(email.subject.clone()),
-        ]));
+        lines.push(header_line(&indent, "From : ", &email.from));
+        lines.push(header_line(&indent, "Date : ", &email.date));
+        lines.push(header_line(&indent, "Subj : ", &email.subject));
         lines.push(Line::raw(""));
+
+        let mut in_diff = false;
         for raw in email.body.lines() {
-            let mut line = style_body_line(raw);
-            if !indent.is_empty() {
-                line.spans.insert(0, Span::raw(indent.clone()));
-            }
+            let text = sanitize(raw);
+            in_diff = next_diff_state(&text, in_diff);
+            let style = body_line_style(&text, in_diff);
+            let line = if indent.is_empty() {
+                Line::styled(text, style)
+            } else {
+                Line::from(vec![Span::raw(indent.clone()), Span::styled(text, style)])
+            };
             lines.push(line);
         }
     }
     lines
+}
+
+fn header_line(indent: &str, label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{indent}{label}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(sanitize(value)),
+    ])
 }
 
 /// Compute a reply-nesting depth per email from `In-Reply-To` links.
@@ -231,25 +232,42 @@ fn reply_depths(emails: &[Email]) -> Vec<usize> {
     depths
 }
 
-/// Apply light syntax coloring to a single body line.
-fn style_body_line(raw: &str) -> Line<'static> {
-    let trimmed = raw.trim_start();
-    let style = if trimmed.starts_with('>') {
-        Style::default().fg(Color::Blue) // quoted text
-    } else if raw.to_ascii_lowercase().contains("merged, thanks") {
+/// Track whether we are inside a diff hunk (kingi-style stateful detection).
+fn next_diff_state(line: &str, in_diff: bool) -> bool {
+    if line.starts_with("diff ") || line.starts_with("--- ") || line.starts_with("+++ ") {
+        true
+    } else if in_diff
+        && !line.starts_with("@@")
+        && !line.starts_with('+')
+        && !line.starts_with('-')
+        && !line.starts_with(' ')
+        && !line.is_empty()
+    {
+        false
+    } else {
+        in_diff
+    }
+}
+
+/// Light syntax coloring for a body line (diff coloring only inside hunks).
+fn body_line_style(line: &str, in_diff: bool) -> Style {
+    if in_diff && line.starts_with("--- ") {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else if in_diff && line.starts_with("+++ ") {
         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-    } else if is_trailer(trimmed) {
-        Style::default().fg(Color::Green)
-    } else if raw.starts_with("@@") {
+    } else if in_diff && line.starts_with("@@") {
         Style::default().fg(Color::Cyan)
-    } else if raw.starts_with('+') {
-        Style::default().fg(Color::Green)
-    } else if raw.starts_with('-') && !raw.starts_with("-- ") {
+    } else if in_diff && line.starts_with('-') {
         Style::default().fg(Color::Red)
+    } else if in_diff && line.starts_with('+') {
+        Style::default().fg(Color::Green)
+    } else if line.trim_start().starts_with('>') {
+        Style::default().fg(Color::Blue)
+    } else if is_trailer(line.trim_start()) {
+        Style::default().fg(Color::Green)
     } else {
         Style::default()
-    };
-    Line::styled(raw.to_string(), style)
+    }
 }
 
 fn is_trailer(line: &str) -> bool {
@@ -266,30 +284,72 @@ fn is_trailer(line: &str) -> bool {
     TRAILERS.iter().any(|t| lower.starts_with(t))
 }
 
-// ----- help bar -------------------------------------------------------------
+// ----- status bar -----------------------------------------------------------
 
-fn render_helpbar(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::default().fg(Color::DarkGray);
-    let line = if app.active_tab == 0 {
-        Line::from(vec![
-            Span::styled(" ↑/↓ move  Enter open  Ctrl+n/p tab  q quit", dim),
-            Span::raw("    "),
-            Span::styled("■ merged", Style::default().fg(Color::Green)),
-            Span::raw("  "),
-            Span::styled("■ reviewed", Style::default().fg(Color::Yellow)),
-            Span::raw("  "),
-            Span::styled("■ loading", dim),
-        ])
+fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
+    let widget = if app.active_tab == 0 {
+        if let Some(err) = &app.error {
+            Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
+        } else {
+            let mut spans = vec![
+                Span::styled(" ↑/↓ move  Enter open  Ctrl+n/p tab  q quit", dim()),
+                Span::styled("  |  ", dim()),
+            ];
+            if app.loading_patches {
+                let spin = SPINNER[(app.tick % 4) as usize];
+                spans.push(Span::styled(
+                    format!("loading {spin}"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else {
+                spans.push(Span::styled(format!("{} patches", app.patches.len()), dim()));
+                if app.loading_more {
+                    spans.push(Span::styled(" +more", Style::default().fg(Color::Yellow)));
+                }
+            }
+            spans.push(Span::styled("  |  ", dim()));
+            spans.push(Span::styled("merged", Style::default().fg(Color::Green)));
+            spans.push(Span::styled("  ", dim()));
+            spans.push(Span::styled("reviewed", Style::default().fg(Color::Yellow)));
+            Paragraph::new(Line::from(spans))
+        }
     } else {
-        Line::from(Span::styled(
+        Paragraph::new(Line::from(Span::styled(
             " ↑/↓ scroll  Ctrl+d/u fast  Ctrl+n/p tab  q close",
-            dim,
-        ))
+            dim(),
+        )))
     };
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(widget, area);
 }
 
 // ----- helpers --------------------------------------------------------------
+
+fn dim() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+/// Expand tabs to 8-column stops and drop other control characters, so the
+/// terminal never receives raw control bytes (which desync the display and
+/// leave stale glyphs from the previous frame).
+fn sanitize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut col = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '\t' => {
+                let spaces = 8 - (col % 8);
+                out.extend(std::iter::repeat_n(' ', spaces));
+                col += spaces;
+            }
+            c if c.is_control() => {}
+            c => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    out
+}
 
 /// Truncate to `max` display columns (approximated by chars), adding an ellipsis.
 fn fit(text: &str, max: usize) -> String {
@@ -367,23 +427,33 @@ mod tests {
             PatchStatus::Normal,
             PatchStatus::Unknown,
         ]);
+        app.list_state.select(None); // avoid the selection highlight recoloring a row
 
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        // Rows start at y=1 (y=0 is the tab bar), in patch order.
-        assert!(row_has_fg(buffer, 1, Color::Green), "merged row should be green");
-        assert!(row_has_fg(buffer, 2, Color::Yellow), "reviewed row should be yellow");
-        assert!(row_has_fg(buffer, 4, Color::DarkGray), "unknown row should be dim");
+        // Body starts at y=2 (y=0 tab bar, y=1 separator), in patch order.
+        assert!(row_has_fg(buffer, 2, Color::Green), "merged row should be green");
+        assert!(row_has_fg(buffer, 3, Color::Yellow), "reviewed row should be yellow");
+        assert!(!row_has_fg(buffer, 4, Color::Green), "normal row must not be green");
+        assert!(!row_has_fg(buffer, 4, Color::Yellow), "normal row must not be yellow");
     }
 
     #[test]
     fn body_line_styling() {
-        assert_eq!(style_body_line("> quoted").style.fg, Some(Color::Blue));
-        assert_eq!(style_body_line("Reviewed-by: X").style.fg, Some(Color::Green));
-        assert_eq!(style_body_line("Merged, thanks!").style.fg, Some(Color::Green));
-        assert_eq!(style_body_line("normal text").style.fg, None);
+        assert_eq!(body_line_style("> quoted", false).fg, Some(Color::Blue));
+        assert_eq!(body_line_style("Reviewed-by: X", false).fg, Some(Color::Green));
+        assert_eq!(body_line_style("normal text", false).fg, None);
+        assert_eq!(body_line_style("+added", true).fg, Some(Color::Green));
+        assert_eq!(body_line_style("-removed", true).fg, Some(Color::Red));
+        assert_eq!(body_line_style("- bullet", false).fg, None); // outside a diff
+    }
+
+    #[test]
+    fn sanitize_expands_tabs_and_drops_controls() {
+        assert_eq!(sanitize("a\tb"), "a       b"); // tab from col 1 -> col 8
+        assert!(!sanitize("x\ry").contains('\r'));
     }
 
     #[test]
@@ -417,7 +487,7 @@ mod tests {
                 subject: "[PATCH] thing".into(),
                 message_id: "id0@example.com".into(),
                 in_reply_to: None,
-                body: "Hello world\nReviewed-by: Bob\n".into(),
+                body: "Hello\tworld\nReviewed-by: Bob\n".into(),
             }],
             loading: false,
             error: None,
@@ -433,5 +503,6 @@ mod tests {
 
         assert!(text.contains("Alice"), "thread should show the sender");
         assert!(text.contains("Reviewed-by: Bob"), "thread should show the body");
+        assert!(!text.contains('\t'), "tabs must be expanded, never rendered raw");
     }
 }
