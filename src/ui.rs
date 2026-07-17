@@ -193,7 +193,9 @@ fn build_thread_lines(emails: &[Email], width: usize, base: &str) -> Vec<Line<'s
         lines.push(header_line(&indent, "From : ", &email.from));
         lines.push(header_line(&indent, "Date : ", &email.date));
         lines.push(header_line(&indent, "Subj : ", &email.subject));
-        lines.push(link_line(&indent, base, &email.message_id));
+        if i == 0 {
+            lines.push(link_line(&indent, base, &email.message_id));
+        }
         lines.push(Line::raw(""));
 
         let mut in_diff = false;
