@@ -150,11 +150,14 @@ fn tree_row(patch: &PatchEntry, row: &Row, superseded: bool, width: usize) -> Li
     let prefix = if row.depth > 0 { "  └ " } else { "" };
     let subject_w = width.saturating_sub(39).max(4);
     let subject = fit(&patch.subject, subject_w.saturating_sub(prefix.chars().count()).max(1));
-    let subject_cell = format!("{prefix}{subject}");
+    // Pad after the subject text so the strikethrough covers only the text.
+    let pad = subject_w.saturating_sub(prefix.chars().count() + subject.chars().count()) + 1;
 
     Line::from(vec![
         Span::styled(format!("{tag:<2} "), tag_style),
-        Span::styled(format!("{subject_cell:<subject_w$} "), subject_style),
+        Span::styled(prefix.to_string(), dim()),
+        Span::styled(subject, subject_style),
+        Span::raw(" ".repeat(pad)),
         Span::styled(format!("{author:<AUTHOR_W$} "), dim()),
         Span::styled(date, Style::default().fg(Color::Cyan)),
     ])
