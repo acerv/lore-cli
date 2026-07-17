@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use crate::config::Config;
 use crate::event::AppEvent;
 use crate::lore::LoreClient;
 use crate::model::{Email, PatchEntry, PatchStatus};
+use crate::series::{self, Group};
 
 /// How many times a status probe is attempted before giving up (leaves the
 /// patch grey). A retry recovers from transient network blips.
@@ -60,12 +62,33 @@ impl ThreadTab {
     }
 }
 
+/// One visible line in the patch list (a flattened version tree).
+#[derive(Debug, Clone, Copy)]
+pub struct Row {
+    /// Index into `App::patches`.
+    pub patch: usize,
+    /// 0 for a head/standalone row, 1 for a nested older version.
+    pub depth: u8,
+    /// Number of nested older versions (heads only).
+    pub children: usize,
+    /// Whether this head is currently expanded.
+    pub expanded: bool,
+    /// Index into `App::groups`.
+    pub group: usize,
+}
+
 /// The whole application state.
 pub struct App {
     pub config: Config,
     pub client: LoreClient,
     tx: UnboundedSender<AppEvent>,
     pub patches: Vec<PatchEntry>,
+    /// Version groups derived from `patches`.
+    pub groups: Vec<Group>,
+    /// Flattened visible rows (respecting expand/collapse).
+    pub rows: Vec<Row>,
+    /// Keys of the groups the user has expanded.
+    expanded: HashSet<String>,
     pub list_state: ListState,
     pub loading_patches: bool,
     pub loading_more: bool,
@@ -91,6 +114,9 @@ impl App {
             client,
             tx,
             patches: Vec::new(),
+            groups: Vec::new(),
+            rows: Vec::new(),
+            expanded: HashSet::new(),
             list_state,
             loading_patches: true,
             loading_more: false,
@@ -124,8 +150,7 @@ impl App {
             Ok(patches) => {
                 self.patches = patches;
                 self.all_loaded = self.patches.len() < self.config.ui.page_size;
-                let selection = if self.patches.is_empty() { None } else { Some(0) };
-                self.list_state.select(selection);
+                self.rebuild_view();
                 self.spawn_status_fetches(0);
             }
             Err(err) => self.error = Some(err),
@@ -144,6 +169,7 @@ impl App {
             }
             let start = self.patches.len();
             self.patches.append(&mut more);
+            self.rebuild_view();
             self.spawn_status_fetches(start);
         }
     }
@@ -219,8 +245,92 @@ impl App {
     /// Load another page once the selection nears the end of the list.
     fn maybe_load_more(&mut self) {
         if let Some(selected) = self.list_state.selected() {
-            if selected + 1 >= self.patches.len() {
+            if selected + 1 >= self.rows.len() {
                 self.load_more();
+            }
+        }
+    }
+
+    // ----- version tree ----------------------------------------------------
+
+    /// Rebuild the version grouping and visible rows from `patches`, preserving
+    /// the selected patch and the expand/collapse state.
+    pub(crate) fn rebuild_view(&mut self) {
+        let selected_id = self.selected_patch_id();
+        self.groups = series::group(self.patches.iter().map(|p| p.subject.as_str()));
+        self.rebuild_rows();
+        self.restore_selection(selected_id);
+    }
+
+    fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        for (group_index, group) in self.groups.iter().enumerate() {
+            let expanded = self.expanded.contains(&group.key);
+            self.rows.push(Row {
+                patch: group.head,
+                depth: 0,
+                children: group.children.len(),
+                expanded,
+                group: group_index,
+            });
+            if expanded {
+                for &child in &group.children {
+                    self.rows.push(Row {
+                        patch: child,
+                        depth: 1,
+                        children: 0,
+                        expanded: false,
+                        group: group_index,
+                    });
+                }
+            }
+        }
+    }
+
+    fn selected_patch_id(&self) -> Option<String> {
+        let row = self.rows.get(self.list_state.selected()?)?;
+        Some(self.patches.get(row.patch)?.message_id.clone())
+    }
+
+    fn restore_selection(&mut self, id: Option<String>) {
+        if self.rows.is_empty() {
+            self.list_state.select(None);
+            return;
+        }
+        let index = id
+            .and_then(|id| {
+                self.rows
+                    .iter()
+                    .position(|r| self.patches.get(r.patch).is_some_and(|p| p.message_id == id))
+            })
+            .unwrap_or_else(|| self.list_state.selected().unwrap_or(0).min(self.rows.len() - 1));
+        self.list_state.select(Some(index));
+    }
+
+    fn selected_row(&self) -> Option<Row> {
+        self.rows.get(self.list_state.selected()?).copied()
+    }
+
+    /// Expand or collapse the version tree under the selection (Space).
+    fn toggle_selected_group(&mut self) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let key = self.groups[row.group].key.clone();
+        if row.depth == 0 {
+            if row.children == 0 {
+                return; // a standalone patch has nothing to fold
+            }
+            if !self.expanded.remove(&key) {
+                self.expanded.insert(key);
+            }
+            self.rebuild_rows();
+        } else {
+            // On a nested version: collapse the group and select its head.
+            self.expanded.remove(&key);
+            self.rebuild_rows();
+            if let Some(head_row) = self.rows.iter().position(|r| r.group == row.group) {
+                self.list_state.select(Some(head_row));
             }
         }
     }
@@ -228,11 +338,11 @@ impl App {
     // ----- patch list navigation -------------------------------------------
 
     fn select_index(&mut self, index: usize) {
-        if self.patches.is_empty() {
+        if self.rows.is_empty() {
             self.list_state.select(None);
             return;
         }
-        self.list_state.select(Some(index.min(self.patches.len() - 1)));
+        self.list_state.select(Some(index.min(self.rows.len() - 1)));
     }
 
     fn select_next(&mut self) {
@@ -282,21 +392,21 @@ impl App {
 
     /// Open the selected patch's thread, focusing an existing tab if present.
     fn open_selected_thread(&mut self) {
-        let Some(index) = self.list_state.selected() else {
+        let Some(row) = self.selected_row() else {
             return;
         };
-        let Some(patch) = self.patches.get(index) else {
+        let Some(patch) = self.patches.get(row.patch) else {
             return;
         };
         let message_id = patch.message_id.clone();
+        let subject = patch.subject.clone();
 
         if let Some(pos) = self.tabs.iter().position(|t| t.message_id == message_id) {
             self.active_tab = pos + 1;
             return;
         }
 
-        self.tabs
-            .push(ThreadTab::new(message_id.clone(), patch.subject.clone()));
+        self.tabs.push(ThreadTab::new(message_id.clone(), subject));
         self.active_tab = self.tabs.len();
         self.spawn_thread_fetch(message_id);
     }
@@ -397,6 +507,7 @@ impl App {
                 self.maybe_load_more();
             }
             KeyCode::PageUp => self.select_by(-10),
+            KeyCode::Char(' ') => self.toggle_selected_group(),
             KeyCode::Char('m') => self.load_more(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
             _ => {}
@@ -457,7 +568,19 @@ mod tests {
                 status: PatchStatus::Unknown,
             })
             .collect();
+        app.rebuild_view();
         app
+    }
+
+    fn patch(subject: &str, id: &str) -> PatchEntry {
+        PatchEntry {
+            subject: subject.into(),
+            author_name: "Dev".into(),
+            author_email: "dev@x".into(),
+            message_id: id.into(),
+            updated: None,
+            status: PatchStatus::Unknown,
+        }
     }
 
     fn push_tab(app: &mut App, id: &str) {
@@ -527,5 +650,48 @@ mod tests {
         app.all_loaded = true;
         app.load_more();
         assert!(!app.loading_more, "must not start a fetch when fully loaded");
+    }
+
+    #[test]
+    fn version_tree_folds_and_unfolds() {
+        let mut app = test_app(0);
+        app.patches = vec![
+            patch("[PATCH v2] mm: fix foo", "v2@x"),
+            patch("[PATCH] mm: fix foo", "v1@x"),
+            patch("[PATCH] other: bar", "other@x"),
+        ];
+        app.rebuild_view();
+
+        // v2+v1 collapse into a single head; "other" stands alone => 2 rows.
+        assert_eq!(app.rows.len(), 2);
+        assert_eq!(app.rows[0].depth, 0);
+        assert_eq!(app.rows[0].children, 1);
+
+        // Space expands the tree, revealing the nested v1.
+        app.list_state.select(Some(0));
+        app.toggle_selected_group();
+        assert_eq!(app.rows.len(), 3);
+        assert_eq!(app.rows[1].depth, 1);
+        assert_eq!(app.patches[app.rows[1].patch].message_id, "v1@x");
+
+        // Space again collapses it.
+        app.toggle_selected_group();
+        assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn nested_and_head_rows_map_to_their_own_patches() {
+        let mut app = test_app(0);
+        app.patches = vec![
+            patch("[PATCH v2] mm: fix foo", "v2@x"),
+            patch("[PATCH] mm: fix foo", "v1@x"),
+        ];
+        app.rebuild_view();
+        app.expanded.insert("mm: fix foo".into());
+        app.rebuild_rows();
+
+        // Enter on either row opens that version's own thread.
+        assert_eq!(app.patches[app.rows[0].patch].message_id, "v2@x");
+        assert_eq!(app.patches[app.rows[1].patch].message_id, "v1@x");
     }
 }

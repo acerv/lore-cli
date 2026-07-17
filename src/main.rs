@@ -6,6 +6,7 @@ mod config;
 mod event;
 mod lore;
 mod model;
+mod series;
 mod ui;
 
 use std::path::PathBuf;

@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, ThreadTab};
+use crate::app::{App, Row, ThreadTab};
 use crate::model::{Email, PatchEntry, PatchStatus};
 
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
@@ -69,9 +69,9 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let width = area.width as usize;
     let items: Vec<ListItem> = app
-        .patches
+        .rows
         .iter()
-        .map(|patch| ListItem::new(patch_row(patch, width)))
+        .map(|row| ListItem::new(tree_row(&app.patches[row.patch], row, width)))
         .collect();
 
     let list = List::new(items)
@@ -102,8 +102,9 @@ fn status_marker(status: PatchStatus) -> char {
     }
 }
 
-/// Build one patch row: "M subject … author date", subject in the status color.
-fn patch_row(patch: &PatchEntry, width: usize) -> Line<'static> {
+/// Build one list row for the version tree: nested versions are indented, and
+/// a head with older versions gets a fold marker (`▸N` / `▾`) after the subject.
+fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
 
@@ -120,13 +121,28 @@ fn patch_row(patch: &PatchEntry, width: usize) -> Line<'static> {
     };
     let author = fit(&sanitize(author_raw), AUTHOR_W);
 
+    let (prefix, suffix) = if row.depth > 0 {
+        ("  └ ".to_string(), String::new())
+    } else if row.children > 0 {
+        let toggle = if row.expanded {
+            " ▾".to_string()
+        } else {
+            format!(" ▸{}", row.children)
+        };
+        (String::new(), toggle)
+    } else {
+        (String::new(), String::new())
+    };
+
     // symbol(2) + marker(2) + subject + ' '(1) + author + ' '(1) + date
     let subject_w = width.saturating_sub(2 + 2 + AUTHOR_W + DATE_W + 2).max(4);
-    let subject = fit(&patch.subject, subject_w);
+    let deco = prefix.chars().count() + suffix.chars().count();
+    let subject = fit(&patch.subject, subject_w.saturating_sub(deco).max(1));
+    let subject_cell = format!("{prefix}{subject}{suffix}");
 
     Line::from(vec![
         Span::styled(format!("{marker} "), Style::default().fg(color)),
-        Span::styled(format!("{subject:<subject_w$} "), Style::default().fg(color)),
+        Span::styled(format!("{subject_cell:<subject_w$} "), Style::default().fg(color)),
         Span::styled(format!("{author:<AUTHOR_W$} "), dim()),
         Span::styled(date, Style::default().fg(Color::Cyan)),
     ])
@@ -292,7 +308,7 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(format!(" error: {err}")).style(Style::default().fg(Color::Red))
         } else {
             let mut spans = vec![
-                Span::styled(" ↑/↓ move  Enter open  Ctrl+n/p tab  q quit", dim()),
+                Span::styled(" ↑/↓ move  Enter open  Space fold  Ctrl+n/p tab  q quit", dim()),
                 Span::styled("  |  ", dim()),
             ];
             if app.loading_patches {
@@ -399,6 +415,7 @@ mod tests {
                 status,
             })
             .collect();
+        app.rebuild_view();
         app
     }
 
