@@ -1,13 +1,16 @@
+use std::sync::Arc;
+
 use ratatui::crossterm::event::{
     Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use ratatui::widgets::ListState;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::event::AppEvent;
 use crate::lore::LoreClient;
-use crate::model::{Email, PatchEntry};
+use crate::model::{Email, PatchEntry, PatchStatus};
 
 /// An open thread, shown in its own tab.
 pub struct ThreadTab {
@@ -66,12 +69,15 @@ pub struct App {
     pub should_quit: bool,
     /// Monotonic counter advanced on every tick (drives spinners).
     pub tick: u64,
+    /// Limits how many status probes hit the server at once.
+    status_sem: Arc<Semaphore>,
 }
 
 impl App {
     pub fn new(config: Config, client: LoreClient, tx: UnboundedSender<AppEvent>) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        let status_sem = Arc::new(Semaphore::new(config.ui.status_concurrency.max(1)));
         Self {
             config,
             client,
@@ -84,6 +90,7 @@ impl App {
             active_tab: 0,
             should_quit: false,
             tick: 0,
+            status_sem,
         }
     }
 
@@ -108,8 +115,35 @@ impl App {
                 self.patches = patches;
                 let selection = if self.patches.is_empty() { None } else { Some(0) };
                 self.list_state.select(selection);
+                self.spawn_status_fetches();
             }
             Err(err) => self.error = Some(err),
+        }
+    }
+
+    pub fn on_status_updated(&mut self, message_id: &str, status: PatchStatus) {
+        if let Some(patch) = self.patches.iter_mut().find(|p| p.message_id == message_id) {
+            patch.status = status;
+        }
+    }
+
+    /// Probe every patch's thread (bounded by a semaphore) to color the list.
+    fn spawn_status_fetches(&self) {
+        for patch in &self.patches {
+            if patch.status != PatchStatus::Unknown {
+                continue;
+            }
+            let client = self.client.clone();
+            let tx = self.tx.clone();
+            let semaphore = self.status_sem.clone();
+            let message_id = patch.message_id.clone();
+            tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await.ok();
+                if let Ok(emails) = client.fetch_thread(&message_id).await {
+                    let status = crate::lore::status::compute_status(&emails);
+                    let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
+                }
+            });
         }
     }
 

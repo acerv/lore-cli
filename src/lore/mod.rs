@@ -5,6 +5,7 @@ pub mod status;
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 
+use crate::cache::Cache;
 use crate::config::LoreConfig;
 use crate::model::{Email, PatchEntry};
 
@@ -16,6 +17,7 @@ pub struct LoreClient {
     http: Client,
     server: String,
     project: String,
+    cache: Cache,
 }
 
 impl LoreClient {
@@ -28,6 +30,7 @@ impl LoreClient {
             http,
             server: config.server.clone(),
             project: config.project.clone(),
+            cache: Cache::new(&config.server, &config.project),
         })
     }
 
@@ -63,8 +66,17 @@ impl LoreClient {
         atom::parse_patch_list(&bytes, &self.project)
     }
 
-    /// Fetch and parse the whole thread for a patch.
+    /// Fetch and parse the whole thread for a patch (served from cache if known).
     pub async fn fetch_thread(&self, message_id: &str) -> Result<Vec<Email>> {
+        let raw = self.fetch_thread_raw(message_id).await?;
+        Ok(mbox::parse_mbox(&raw))
+    }
+
+    /// Return the decompressed thread mbox, using the on-disk cache when present.
+    async fn fetch_thread_raw(&self, message_id: &str) -> Result<Vec<u8>> {
+        if let Some(data) = self.cache.get(message_id) {
+            return Ok(data);
+        }
         let url = self.thread_mbox_url(message_id);
         let resp = self
             .http
@@ -76,6 +88,43 @@ impl LoreClient {
             bail!("server returned {} for {}", resp.status(), url);
         }
         let bytes = resp.bytes().await.context("reading thread mbox body")?;
-        mbox::parse_thread_mbox(&bytes)
+        let raw = mbox::gunzip(&bytes);
+        self.cache.put(message_id, &raw);
+        Ok(raw)
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::config::LoreConfig;
+
+    /// End-to-end check against the real server. Run with:
+    ///   cargo test -- --ignored live_pipeline
+    #[tokio::test]
+    #[ignore = "hits lore.kernel.org over the network"]
+    async fn live_pipeline() {
+        let cfg = LoreConfig {
+            server: "https://lore.kernel.org".into(),
+            project: "amd-gfx".into(),
+        };
+        let client = LoreClient::new(&cfg).unwrap();
+
+        let patches = client.fetch_patch_list(0).await.unwrap();
+        assert!(!patches.is_empty(), "expected some patches");
+
+        let emails = client.fetch_thread(&patches[0].message_id).await.unwrap();
+        assert!(!emails.is_empty(), "expected some emails in the thread");
+        let _status = crate::lore::status::compute_status(&emails);
+
+        // Second fetch should be served from the on-disk cache.
+        let cached = client.fetch_thread(&patches[0].message_id).await.unwrap();
+        assert_eq!(emails.len(), cached.len());
+        eprintln!(
+            "live_pipeline: {} patches, first thread {} emails, status {:?}",
+            patches.len(),
+            emails.len(),
+            _status
+        );
     }
 }

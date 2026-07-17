@@ -1,19 +1,12 @@
 use std::io::Read;
 
-use anyhow::Result;
 use flate2::read::GzDecoder;
 use mailparse::{parse_mail, MailHeaderMap, ParsedMail};
 
 use crate::model::Email;
 
-/// Decompress a gzipped mbox and parse it into a list of emails.
-pub fn parse_thread_mbox(gzipped: &[u8]) -> Result<Vec<Email>> {
-    let raw = gunzip(gzipped);
-    Ok(parse_mbox(&raw))
-}
-
 /// Decompress gzip data, falling back to the input as-is when it is not gzipped.
-fn gunzip(data: &[u8]) -> Vec<u8> {
+pub fn gunzip(data: &[u8]) -> Vec<u8> {
     if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
         let mut decoder = GzDecoder::new(data);
         let mut out = Vec::new();
@@ -29,7 +22,7 @@ fn gunzip(data: &[u8]) -> Vec<u8> {
 /// public-inbox uses mboxrd, where body lines starting with `From ` are escaped
 /// with a leading `>`, so an unescaped `From ` at column 0 reliably marks a new
 /// message.
-fn parse_mbox(raw: &[u8]) -> Vec<Email> {
+pub fn parse_mbox(raw: &[u8]) -> Vec<Email> {
     let text = String::from_utf8_lossy(raw);
     let mut messages: Vec<String> = Vec::new();
     let mut current = String::new();

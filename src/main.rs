@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod cache;
 mod config;
 mod event;
 mod lore;
@@ -105,6 +106,9 @@ async fn run(
             AppEvent::Input(input) => app.handle_crossterm(input),
             AppEvent::Tick => app.on_tick(),
             AppEvent::PatchesLoaded(result) => app.on_patches_loaded(result),
+            AppEvent::StatusUpdated { message_id, status } => {
+                app.on_status_updated(&message_id, status)
+            }
             AppEvent::ThreadLoaded { message_id, result } => {
                 app.on_thread_loaded(message_id, result)
             }
