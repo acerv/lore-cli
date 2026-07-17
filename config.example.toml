@@ -13,6 +13,7 @@ page_size = 200
 status_concurrency = 6
 
 [status]
-# Case-insensitive text that marks a patch as merged (shown green). Maintainers
-# phrase this differently per subsystem, e.g. "Applied, thanks" or "pushed".
-merged_marker = "Merged, thanks"
+# Case-insensitive texts that mark a patch as merged (shown green). Maintainers
+# phrase this differently per subsystem — list every phrase that applies. A
+# single string also works: merged_markers = "Merged, thanks".
+merged_markers = ["Merged, thanks", "Applied, thanks"]

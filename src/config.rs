@@ -51,22 +51,58 @@ fn default_status_concurrency() -> usize {
 /// How patch status is detected from a thread.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatusConfig {
-    /// Case-insensitive text marking a patch as merged (green). Different
-    /// subsystems phrase this differently (e.g. "Applied, thanks").
-    #[serde(default = "default_merged_marker")]
-    pub merged_marker: String,
+    /// Case-insensitive texts that mark a patch as merged (green). Subsystems
+    /// phrase this differently (e.g. "Applied, thanks"); accepts a single
+    /// string or a list.
+    #[serde(
+        default = "default_merged_markers",
+        alias = "merged_marker",
+        deserialize_with = "string_or_vec"
+    )]
+    pub merged_markers: Vec<String>,
 }
 
 impl Default for StatusConfig {
     fn default() -> Self {
         Self {
-            merged_marker: default_merged_marker(),
+            merged_markers: default_merged_markers(),
         }
     }
 }
 
-fn default_merged_marker() -> String {
-    "Merged, thanks".to_string()
+fn default_merged_markers() -> Vec<String> {
+    vec!["Merged, thanks".to_string()]
+}
+
+/// Accept either a single string or a list of strings.
+fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct StringOrVec;
+    impl<'de> Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a string or a list of strings")
+        }
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+            Ok(vec![value.to_string()])
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(item) = seq.next_element::<String>()? {
+                out.push(item);
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_any(StringOrVec)
 }
 
 impl Config {
@@ -98,8 +134,9 @@ impl Config {
         if self.ui.status_concurrency == 0 {
             self.ui.status_concurrency = default_status_concurrency();
         }
-        if self.status.merged_marker.trim().is_empty() {
-            self.status.merged_marker = default_merged_marker();
+        self.status.merged_markers.retain(|m| !m.trim().is_empty());
+        if self.status.merged_markers.is_empty() {
+            self.status.merged_markers = default_merged_markers();
         }
         Ok(())
     }
@@ -123,7 +160,29 @@ mod tests {
         assert_eq!(config.lore.project, "amd-gfx");
         assert_eq!(config.ui.page_size, 200);
         assert_eq!(config.ui.status_concurrency, 6);
-        assert_eq!(config.status.merged_marker, "Merged, thanks");
+        assert_eq!(config.status.merged_markers, vec!["Merged, thanks".to_string()]);
+    }
+
+    #[test]
+    fn parses_merged_markers_string_or_list() {
+        let base = "[lore]\nserver = \"https://x\"\nproject = \"p\"\n[status]\n";
+
+        let list: Config = toml::from_str(&format!(
+            "{base}merged_markers = [\"Merged, thanks\", \"Applied, thanks\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            list.status.merged_markers,
+            vec!["Merged, thanks".to_string(), "Applied, thanks".to_string()]
+        );
+
+        let single: Config =
+            toml::from_str(&format!("{base}merged_markers = \"Applied, thanks\"\n")).unwrap();
+        assert_eq!(single.status.merged_markers, vec!["Applied, thanks".to_string()]);
+
+        // Backward-compatible singular key.
+        let old: Config = toml::from_str(&format!("{base}merged_marker = \"Pushed\"\n")).unwrap();
+        assert_eq!(old.status.merged_markers, vec!["Pushed".to_string()]);
     }
 
     #[test]

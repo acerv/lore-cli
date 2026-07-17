@@ -51,9 +51,9 @@ page_size          = 200   # patches per page (200 = server maximum)
 status_concurrency = 6     # parallel thread fetches for status detection
 
 [status]
-# Case-insensitive text that marks a patch as merged (shown green). Maintainers
-# phrase this differently per subsystem, e.g. "Applied, thanks" or "pushed".
-merged_marker = "Merged, thanks"
+# Case-insensitive texts that mark a patch as merged (shown green). List every
+# phrase your subsystem uses; a single string also works.
+merged_markers = ["Merged, thanks", "Applied, thanks"]
 ```
 
 Only the `[lore]` section is required; `[ui]` and `[status]` fall back to the
@@ -110,9 +110,9 @@ Thread tab:
 ### Note on merge detection
 
 Whether a patch shows as merged depends entirely on maintainers writing the
-configured `merged_marker`. Conventions vary widely between subsystems (some say
-"Applied, thanks", some nothing at all), so set `merged_marker` to match the list
-you follow. `Reviewed-by:` is a standard git trailer and is detected everywhere.
+configured `merged_markers`. Conventions vary widely between subsystems (some say
+"Applied, thanks", some nothing at all), so list the phrases your list uses.
+`Reviewed-by:` is a standard git trailer and is detected everywhere.
 
 ## Development
 

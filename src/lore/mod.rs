@@ -124,7 +124,7 @@ mod live_tests {
 
         let emails = client.fetch_thread(&patches[0].message_id).await.unwrap();
         assert!(!emails.is_empty(), "expected some emails in the thread");
-        let _status = crate::lore::status::compute_status(&emails, "Merged, thanks");
+        let _status = crate::lore::status::compute_status(&emails, &["Merged, thanks".to_string()]);
 
         // Second fetch should be served from the on-disk cache.
         let cached = client.fetch_thread(&patches[0].message_id).await.unwrap();

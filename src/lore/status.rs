@@ -6,11 +6,11 @@ use crate::model::{Email, PatchStatus};
 /// `Reviewed-by:` trailer anywhere marks it reviewed (yellow); otherwise it is
 /// normal. Quoted lines (starting with `>`) are ignored to avoid matching text
 /// someone merely quoted back.
-pub fn compute_status(emails: &[Email], merged_marker: &str) -> PatchStatus {
-    let marker = merged_marker.to_ascii_lowercase();
+pub fn compute_status(emails: &[Email], merged_markers: &[String]) -> PatchStatus {
+    let markers: Vec<String> = merged_markers.iter().map(|m| m.to_ascii_lowercase()).collect();
     let mut reviewed = false;
     for email in emails {
-        if body_has_merged(&email.body, &marker) {
+        if body_has_merged(&email.body, &markers) {
             return PatchStatus::Merged;
         }
         if !reviewed && body_has_reviewed_by(&email.body) {
@@ -28,10 +28,11 @@ fn is_quoted(line: &str) -> bool {
     line.trim_start().starts_with('>')
 }
 
-fn body_has_merged(body: &str, lowercase_marker: &str) -> bool {
-    body.lines()
-        .filter(|line| !is_quoted(line))
-        .any(|line| line.to_ascii_lowercase().contains(lowercase_marker))
+fn body_has_merged(body: &str, lowercase_markers: &[String]) -> bool {
+    body.lines().filter(|line| !is_quoted(line)).any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lowercase_markers.iter().any(|m| lower.contains(m.as_str()))
+    })
 }
 
 fn body_has_reviewed_by(body: &str) -> bool {
@@ -56,7 +57,7 @@ mod tests {
     }
 
     fn status(emails: &[Email]) -> PatchStatus {
-        compute_status(emails, "Merged, thanks")
+        compute_status(emails, &["Merged, thanks".to_string()])
     }
 
     #[test]
@@ -104,7 +105,20 @@ mod tests {
     #[test]
     fn custom_marker_is_respected() {
         let emails = vec![email("Applied, thanks!\n")];
-        assert_eq!(compute_status(&emails, "Applied, thanks"), PatchStatus::Merged);
-        assert_eq!(compute_status(&emails, "Merged, thanks"), PatchStatus::Normal);
+        assert_eq!(
+            compute_status(&emails, &["Applied, thanks".to_string()]),
+            PatchStatus::Merged
+        );
+        assert_eq!(
+            compute_status(&emails, &["Merged, thanks".to_string()]),
+            PatchStatus::Normal
+        );
+    }
+
+    #[test]
+    fn any_of_multiple_markers_matches() {
+        let emails = vec![email("Applied, thanks!\n")];
+        let markers = ["Merged, thanks".to_string(), "Applied, thanks".to_string()];
+        assert_eq!(compute_status(&emails, &markers), PatchStatus::Merged);
     }
 }

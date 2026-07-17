@@ -250,13 +250,13 @@ impl App {
         let client = self.client.clone();
         let tx = self.tx.clone();
         let semaphore = self.status_sem.clone();
-        let marker = self.config.status.merged_marker.clone();
+        let markers = self.config.status.merged_markers.clone();
         tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await.ok();
             for attempt in 0..STATUS_FETCH_ATTEMPTS {
                 match client.fetch_thread(&message_id).await {
                     Ok(emails) => {
-                        let status = crate::lore::status::compute_status(&emails, &marker);
+                        let status = crate::lore::status::compute_status(&emails, &markers);
                         let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
                         return;
                     }
