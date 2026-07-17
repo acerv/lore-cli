@@ -22,7 +22,8 @@ whole threads in closable, scrollable tabs.
 - Multiple tabs; the patch list is always tab 0.
 - Version grouping: when several versions of a patch are loaded, the newest
   becomes the head and older ones fold beneath it (Space to expand/collapse).
-- Background status probing with bounded concurrency and an on-disk cache.
+- Background status probing (visible rows first) with bounded concurrency and an
+  on-disk cache.
 - Incremental pagination: more patches load as you scroll to the bottom.
 
 ## Build
@@ -74,6 +75,7 @@ Patch list (tab 0):
 | Up / Down (k / j)         | move selection                  |
 | Home / End (g / G)        | first / last                    |
 | PageUp / PageDown         | jump 10                         |
+| Ctrl+d / Ctrl+u           | half-page down / up             |
 | Enter / → / l             | open the selected thread        |
 | Space                     | expand / collapse a version tree|
 | m                         | load more patches (auto at end) |

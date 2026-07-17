@@ -389,6 +389,10 @@ impl App {
         self.select_index((current + delta).max(0) as usize);
     }
 
+    fn half_page(&self) -> i32 {
+        (self.list_height / 2).max(1) as i32
+    }
+
     // ----- tabs ------------------------------------------------------------
 
     fn tab_count(&self) -> usize {
@@ -504,15 +508,20 @@ impl App {
         }
 
         if self.active_tab == 0 {
-            self.handle_list_key(key);
+            self.handle_list_key(key, ctrl);
         } else {
             self.handle_thread_key(key, ctrl);
         }
     }
 
-    fn handle_list_key(&mut self, key: KeyEvent) {
+    fn handle_list_key(&mut self, key: KeyEvent, ctrl: bool) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('d') if ctrl => {
+                self.select_by(self.half_page());
+                self.maybe_load_more();
+            }
+            KeyCode::Char('u') if ctrl => self.select_by(-self.half_page()),
             KeyCode::Down | KeyCode::Char('j') => {
                 self.select_next();
                 self.maybe_load_more();
@@ -729,5 +738,20 @@ mod tests {
             app.requested.insert(id.clone());
         }
         assert!(app.visible_probe_targets().is_empty());
+    }
+
+    #[test]
+    fn ctrl_d_and_u_move_half_page_in_list() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(40);
+        app.list_height = 10; // half page = 5
+        let ctrl = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+
+        app.handle_crossterm(ctrl('d'));
+        assert_eq!(app.list_state.selected(), Some(5));
+        app.handle_crossterm(ctrl('d'));
+        assert_eq!(app.list_state.selected(), Some(10));
+        app.handle_crossterm(ctrl('u'));
+        assert_eq!(app.list_state.selected(), Some(5));
     }
 }
