@@ -105,6 +105,9 @@ async fn run(
             AppEvent::Input(input) => app.handle_crossterm(input),
             AppEvent::Tick => app.on_tick(),
             AppEvent::PatchesLoaded(result) => app.on_patches_loaded(result),
+            AppEvent::ThreadLoaded { message_id, result } => {
+                app.on_thread_loaded(message_id, result)
+            }
         }
         if app.should_quit {
             break;

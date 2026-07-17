@@ -1,6 +1,6 @@
 use ratatui::crossterm::event::Event as CrosstermEvent;
 
-use crate::model::PatchEntry;
+use crate::model::{Email, PatchEntry};
 
 /// Everything the main loop reacts to, delivered over a single channel.
 pub enum AppEvent {
@@ -10,4 +10,9 @@ pub enum AppEvent {
     Tick,
     /// The initial patch list finished loading.
     PatchesLoaded(Result<Vec<PatchEntry>, String>),
+    /// A thread requested by opening a tab finished loading.
+    ThreadLoaded {
+        message_id: String,
+        result: Result<Vec<Email>, String>,
+    },
 }
