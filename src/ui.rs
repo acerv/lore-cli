@@ -75,7 +75,10 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .rows
         .iter()
-        .map(|row| ListItem::new(tree_row(&app.patches[row.patch], row, width)))
+        .map(|row| {
+            let superseded = app.superseded.get(row.patch).copied().unwrap_or(false);
+            ListItem::new(tree_row(&app.patches[row.patch], row, superseded, width))
+        })
         .collect();
 
     let list = List::new(items)
@@ -89,12 +92,25 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn status_color(status: PatchStatus) -> Color {
+/// Style for a patch subject: merged wins (green); a superseded patch is greyed
+/// out and struck through; otherwise reviewed (yellow), the latest patch still
+/// needing review (light cyan), or still-probing (grey).
+fn status_style(status: PatchStatus, superseded: bool) -> Style {
+    if status == PatchStatus::Merged {
+        return Style::default().fg(Color::Green);
+    }
+    if superseded {
+        return Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::CROSSED_OUT);
+    }
     match status {
-        PatchStatus::Merged => Color::Green,
-        PatchStatus::Reviewed => Color::Yellow,
-        PatchStatus::Normal => Color::Reset,
-        PatchStatus::Unknown => Color::DarkGray,
+        PatchStatus::Reviewed => Style::default().fg(Color::Yellow),
+        PatchStatus::Normal => Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
+        PatchStatus::Unknown => Style::default().fg(Color::DarkGray),
+        PatchStatus::Merged => Style::default().fg(Color::Green),
     }
 }
 
@@ -103,11 +119,11 @@ fn status_color(status: PatchStatus) -> Color {
 /// A patch-set head (a cover letter) shows the number of patches (`▸N`
 /// collapsed / `▾N` expanded) in red at the very start; members are indented.
 /// Merge and review state is conveyed by the row color.
-fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
+fn tree_row(patch: &PatchEntry, row: &Row, superseded: bool, width: usize) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
 
-    let color = status_color(patch.status);
+    let subject_style = status_style(patch.status, superseded);
     let date = patch
         .updated
         .map(|d| d.format("%Y-%m-%d").to_string())
@@ -138,7 +154,7 @@ fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
 
     Line::from(vec![
         Span::styled(format!("{tag:<2} "), tag_style),
-        Span::styled(format!("{subject_cell:<subject_w$} "), Style::default().fg(color)),
+        Span::styled(format!("{subject_cell:<subject_w$} "), subject_style),
         Span::styled(format!("{author:<AUTHOR_W$} "), dim()),
         Span::styled(date, Style::default().fg(Color::Cyan)),
     ])
@@ -458,6 +474,11 @@ mod tests {
         (0..buffer.area.width).any(|x| buffer.cell((x, y)).is_some_and(|c| c.fg == color))
     }
 
+    fn row_has_modifier(buffer: &Buffer, y: u16, modifier: Modifier) -> bool {
+        (0..buffer.area.width)
+            .any(|x| buffer.cell((x, y)).is_some_and(|c| c.modifier.contains(modifier)))
+    }
+
     fn buffer_text(buffer: &Buffer) -> String {
         let mut text = String::new();
         for y in 0..buffer.area.height {
@@ -488,8 +509,51 @@ mod tests {
         // Body starts at y=2 (y=0 tab bar, y=1 separator), in patch order.
         assert!(row_has_fg(buffer, 2, Color::Green), "merged row should be green");
         assert!(row_has_fg(buffer, 3, Color::Yellow), "reviewed row should be yellow");
-        assert!(!row_has_fg(buffer, 4, Color::Green), "normal row must not be green");
-        assert!(!row_has_fg(buffer, 4, Color::Yellow), "normal row must not be yellow");
+        assert!(
+            row_has_fg(buffer, 4, Color::LightCyan),
+            "latest normal row should be light cyan"
+        );
+    }
+
+    #[test]
+    fn superseded_row_is_struck_grey() {
+        let config = Config {
+            lore: LoreConfig {
+                server: "https://lore.kernel.org".into(),
+                project: "test".into(),
+            },
+            ui: UiConfig::default(),
+            status: StatusConfig::default(),
+        };
+        let client = LoreClient::new(&config.lore).unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut app = App::new(config, client, tx);
+        app.loading_patches = false;
+        let mk = |s: &str, id: &str| PatchEntry {
+            subject: s.into(),
+            author_name: "Dev".into(),
+            author_email: "d@x".into(),
+            message_id: id.into(),
+            updated: None,
+            status: PatchStatus::Normal,
+        };
+        app.patches = vec![
+            mk("[PATCH v2] mm: fix", "b@x"), // latest
+            mk("[PATCH] mm: fix", "a@x"),    // superseded v1
+        ];
+        app.rebuild_view();
+        app.list_state.select(None);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // y=2 latest (light cyan); y=3 superseded (grey + strikethrough).
+        assert!(row_has_fg(buffer, 2, Color::LightCyan), "latest should be light cyan");
+        assert!(
+            row_has_modifier(buffer, 3, Modifier::CROSSED_OUT),
+            "superseded row should be struck through"
+        );
     }
 
     #[test]

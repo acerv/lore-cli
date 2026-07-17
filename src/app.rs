@@ -87,6 +87,8 @@ pub struct App {
     pub groups: Vec<Group>,
     /// Flattened visible rows (respecting expand/collapse).
     pub rows: Vec<Row>,
+    /// Per-patch flag: a newer version of this patch exists.
+    pub superseded: Vec<bool>,
     /// Keys of the groups the user has expanded.
     expanded: HashSet<String>,
     pub list_state: ListState,
@@ -124,6 +126,7 @@ impl App {
             patches: Vec::new(),
             groups: Vec::new(),
             rows: Vec::new(),
+            superseded: Vec::new(),
             expanded: HashSet::new(),
             list_state,
             loading_patches: true,
@@ -306,6 +309,8 @@ impl App {
 
     pub(crate) fn rebuild_view(&mut self) {
         let selected_id = self.selected_patch_id();
+        self.superseded =
+            series::superseded_flags(self.patches.iter().map(|p| p.subject.as_str()));
         self.groups = series::group(
             self.patches
                 .iter()

@@ -122,6 +122,51 @@ pub fn group<'a>(items: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Gro
     groups
 }
 
+/// Parse the version (`vN`, default 1) and a normalized title key of a subject.
+fn version_of(subject: &str) -> (u32, String) {
+    let mut rest = subject.trim();
+    let mut version = 1;
+    let mut found = false;
+    while let Some(inner) = rest.strip_prefix('[') {
+        let Some(close) = inner.find(']') else {
+            break;
+        };
+        if !found {
+            if let Some(v) = inner[..close]
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .find_map(|t| {
+                    let digits = t.strip_prefix('v').or_else(|| t.strip_prefix('V'))?;
+                    digits.parse::<u32>().ok()
+                })
+            {
+                version = v;
+                found = true;
+            }
+        }
+        rest = inner[close + 1..].trim_start();
+    }
+    let title = rest.trim();
+    let key = if title.is_empty() { subject.trim() } else { title };
+    (
+        version,
+        key.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase(),
+    )
+}
+
+/// For each subject, whether a newer version of the same patch exists.
+pub fn superseded_flags<'a>(subjects: impl IntoIterator<Item = &'a str>) -> Vec<bool> {
+    let parsed: Vec<(u32, String)> = subjects.into_iter().map(version_of).collect();
+    let mut max: HashMap<&str, u32> = HashMap::new();
+    for (version, key) in &parsed {
+        let entry = max.entry(key.as_str()).or_insert(0);
+        *entry = (*entry).max(*version);
+    }
+    parsed
+        .iter()
+        .map(|(version, key)| *version < max[key.as_str()])
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +235,25 @@ mod tests {
         assert_eq!(groups[0].head, 3); // cover heads the set
         assert_eq!(groups[0].children, vec![2, 0]);
         assert_eq!(groups[1].head, 1); // unrelated standalone
+    }
+
+    #[test]
+    fn superseded_flags_mark_older_versions() {
+        let flags = superseded_flags([
+            "[PATCH v2] mm: fix",
+            "[PATCH] mm: fix",
+            "[PATCH] net: unrelated",
+        ]);
+        assert_eq!(flags, vec![false, true, false]);
+    }
+
+    #[test]
+    fn superseded_flags_handle_list_tag_and_parts() {
+        let flags = superseded_flags([
+            "[LTP] [PATCH v3 1/2] a: x",
+            "[LTP] [PATCH 1/2] a: x",
+            "[LTP] [PATCH v2 1/2] a: x",
+        ]);
+        assert_eq!(flags, vec![false, true, true]); // v3 latest
     }
 }
