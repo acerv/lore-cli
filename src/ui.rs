@@ -92,12 +92,14 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-/// Style for a patch subject: merged wins (green); a superseded patch is greyed
-/// out and struck through; otherwise reviewed (yellow), the latest patch still
-/// needing review (light cyan), or still-probing (grey).
+/// Style for a patch subject: merged is green and struck through (done); a
+/// superseded patch is greyed and struck through; otherwise reviewed (yellow),
+/// the latest still needing review (default white), or still-probing (grey).
 fn status_style(status: PatchStatus, superseded: bool) -> Style {
     if status == PatchStatus::Merged {
-        return Style::default().fg(Color::Green);
+        return Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::CROSSED_OUT);
     }
     if superseded {
         return Style::default()
@@ -106,9 +108,7 @@ fn status_style(status: PatchStatus, superseded: bool) -> Style {
     }
     match status {
         PatchStatus::Reviewed => Style::default().fg(Color::Yellow),
-        PatchStatus::Normal => Style::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::BOLD),
+        PatchStatus::Normal => Style::default().fg(Color::Reset),
         PatchStatus::Unknown => Style::default().fg(Color::DarkGray),
         PatchStatus::Merged => Style::default().fg(Color::Green),
     }
@@ -508,11 +508,13 @@ mod tests {
 
         // Body starts at y=2 (y=0 tab bar, y=1 separator), in patch order.
         assert!(row_has_fg(buffer, 2, Color::Green), "merged row should be green");
-        assert!(row_has_fg(buffer, 3, Color::Yellow), "reviewed row should be yellow");
         assert!(
-            row_has_fg(buffer, 4, Color::LightCyan),
-            "latest normal row should be light cyan"
+            row_has_modifier(buffer, 2, Modifier::CROSSED_OUT),
+            "merged row should be struck through"
         );
+        assert!(row_has_fg(buffer, 3, Color::Yellow), "reviewed row should be yellow");
+        assert!(!row_has_fg(buffer, 4, Color::Green), "normal row must not be green");
+        assert!(!row_has_fg(buffer, 4, Color::Yellow), "normal row must not be yellow");
     }
 
     #[test]
@@ -548,8 +550,11 @@ mod tests {
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        // y=2 latest (light cyan); y=3 superseded (grey + strikethrough).
-        assert!(row_has_fg(buffer, 2, Color::LightCyan), "latest should be light cyan");
+        // y=2 latest (plain white); y=3 superseded (grey + strikethrough).
+        assert!(
+            !row_has_modifier(buffer, 2, Modifier::CROSSED_OUT),
+            "latest row should not be struck through"
+        );
         assert!(
             row_has_modifier(buffer, 3, Modifier::CROSSED_OUT),
             "superseded row should be struck through"
