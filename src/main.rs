@@ -112,6 +112,7 @@ async fn run(
             break;
         }
         terminal.draw(|frame| ui::render(frame, app))?;
+        app.probe_visible();
     }
     Ok(())
 }

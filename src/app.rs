@@ -102,6 +102,10 @@ pub struct App {
     pub tick: u64,
     /// Limits how many status probes hit the server at once.
     status_sem: Arc<Semaphore>,
+    /// Message-ids already scheduled for a status probe (dedup).
+    requested: HashSet<String>,
+    /// Height of the list viewport captured on the last render.
+    pub list_height: u16,
 }
 
 impl App {
@@ -127,6 +131,8 @@ impl App {
             should_quit: false,
             tick: 0,
             status_sem,
+            requested: HashSet::new(),
+            list_height: 0,
         }
     }
 
@@ -150,8 +156,8 @@ impl App {
             Ok(patches) => {
                 self.patches = patches;
                 self.all_loaded = self.patches.len() < self.config.ui.page_size;
+                self.requested.clear();
                 self.rebuild_view();
-                self.spawn_status_fetches(0);
             }
             Err(err) => self.error = Some(err),
         }
@@ -167,10 +173,8 @@ impl App {
             if more.is_empty() {
                 return;
             }
-            let start = self.patches.len();
             self.patches.append(&mut more);
             self.rebuild_view();
-            self.spawn_status_fetches(start);
         }
     }
 
@@ -180,37 +184,54 @@ impl App {
         }
     }
 
-    /// Probe patches from `start` onward (bounded by a semaphore) to color them.
-    fn spawn_status_fetches(&self, start: usize) {
-        let marker = self.config.status.merged_marker.clone();
-        for patch in self.patches.iter().skip(start) {
-            if patch.status != PatchStatus::Unknown {
-                continue;
-            }
-            let client = self.client.clone();
-            let tx = self.tx.clone();
-            let semaphore = self.status_sem.clone();
-            let message_id = patch.message_id.clone();
-            let marker = marker.clone();
-            tokio::spawn(async move {
-                let _permit = semaphore.acquire_owned().await.ok();
-                for attempt in 0..STATUS_FETCH_ATTEMPTS {
-                    match client.fetch_thread(&message_id).await {
-                        Ok(emails) => {
-                            let status = crate::lore::status::compute_status(&emails, &marker);
-                            let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
-                            return;
-                        }
-                        // Retry transient failures; a timeout releases the
-                        // permit so the pool keeps flowing either way.
-                        Err(_) if attempt + 1 < STATUS_FETCH_ATTEMPTS => {
-                            tokio::time::sleep(STATUS_RETRY_DELAY).await;
-                        }
-                        Err(_) => {}
-                    }
-                }
-            });
+    /// Schedule status probes for the rows in (or just below) the viewport, so a
+    /// cold start only fetches what the user can actually see.
+    pub fn probe_visible(&mut self) {
+        for message_id in self.visible_probe_targets() {
+            self.requested.insert(message_id.clone());
+            self.spawn_status_probe(message_id);
         }
+    }
+
+    /// Message-ids of visible (plus one screen of look-ahead) patches whose
+    /// status is still unknown and not already scheduled.
+    fn visible_probe_targets(&self) -> Vec<String> {
+        if self.rows.is_empty() {
+            return Vec::new();
+        }
+        let offset = self.list_state.offset().min(self.rows.len());
+        let end = (offset + self.list_height as usize * 2).min(self.rows.len());
+        self.rows[offset..end]
+            .iter()
+            .filter_map(|row| self.patches.get(row.patch))
+            .filter(|p| p.status == PatchStatus::Unknown && !self.requested.contains(&p.message_id))
+            .map(|p| p.message_id.clone())
+            .collect()
+    }
+
+    fn spawn_status_probe(&self, message_id: String) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        let semaphore = self.status_sem.clone();
+        let marker = self.config.status.merged_marker.clone();
+        tokio::spawn(async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            for attempt in 0..STATUS_FETCH_ATTEMPTS {
+                match client.fetch_thread(&message_id).await {
+                    Ok(emails) => {
+                        let status = crate::lore::status::compute_status(&emails, &marker);
+                        let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
+                        return;
+                    }
+                    // Retry transient failures; a timeout releases the permit
+                    // so the pool keeps flowing either way.
+                    Err(_) if attempt + 1 < STATUS_FETCH_ATTEMPTS => {
+                        tokio::time::sleep(STATUS_RETRY_DELAY).await;
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
     }
 
     pub fn on_thread_loaded(&mut self, message_id: String, result: Result<Vec<Email>, String>) {
@@ -693,5 +714,20 @@ mod tests {
         // Enter on either row opens that version's own thread.
         assert_eq!(app.patches[app.rows[0].patch].message_id, "v2@x");
         assert_eq!(app.patches[app.rows[1].patch].message_id, "v1@x");
+    }
+
+    #[test]
+    fn probes_only_visible_and_lookahead_rows() {
+        let mut app = test_app(20);
+        app.list_height = 3;
+        // offset 0, viewport 3 + one screen look-ahead => rows 0..6.
+        let targets = app.visible_probe_targets();
+        assert_eq!(targets.len(), 6);
+
+        // Already-scheduled rows are not returned again.
+        for id in &targets {
+            app.requested.insert(id.clone());
+        }
+        assert!(app.visible_probe_targets().is_empty());
     }
 }

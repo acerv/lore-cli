@@ -47,6 +47,7 @@ fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
 // ----- patch list ----------------------------------------------------------
 
 fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.list_height = area.height;
     if app.loading_patches {
         let spin = SPINNER[(app.tick % 4) as usize];
         frame.render_widget(
