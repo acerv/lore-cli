@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 
 /// Merge/review state of a patch, derived from its thread.
-#[allow(dead_code)] // Reviewed/Merged are produced by status detection (later step).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PatchStatus {
     /// Not yet determined (thread not fetched).

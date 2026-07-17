@@ -1,5 +1,6 @@
 pub mod atom;
 pub mod mbox;
+pub mod status;
 
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
