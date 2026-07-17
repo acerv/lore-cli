@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,6 +95,7 @@ pub struct App {
     pub loading_patches: bool,
     pub loading_more: bool,
     pub all_loaded: bool,
+    pub refreshing: bool,
     pub error: Option<String>,
     /// Open thread tabs. Tab index 0 is the patch list; tab N is `tabs[N - 1]`.
     pub tabs: Vec<ThreadTab>,
@@ -132,6 +133,7 @@ impl App {
             loading_patches: true,
             loading_more: false,
             all_loaded: false,
+            refreshing: false,
             error: None,
             tabs: Vec::new(),
             active_tab: 0,
@@ -147,6 +149,19 @@ impl App {
 
     /// Kick off the initial patch-list fetch in the background.
     pub fn spawn_initial_load(&self) {
+        self.spawn_list_fetch();
+    }
+
+    /// Re-fetch the newest page to pick up new patches (R).
+    fn refresh(&mut self) {
+        if self.loading_patches || self.refreshing {
+            return;
+        }
+        self.refreshing = true;
+        self.spawn_list_fetch();
+    }
+
+    fn spawn_list_fetch(&self) {
         let client = self.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -161,12 +176,25 @@ impl App {
 
     pub fn on_patches_loaded(&mut self, result: Result<Vec<PatchEntry>, String>) {
         self.loading_patches = false;
+        self.refreshing = false;
         match result {
             Ok(patches) => {
+                let keep = self.selected_patch_id();
+                // Carry over already-known statuses so a refresh doesn't grey the
+                // whole list; only genuinely new patches are probed again.
+                let previous: HashMap<String, PatchStatus> = self
+                    .patches
+                    .iter()
+                    .map(|p| (p.message_id.clone(), p.status))
+                    .collect();
                 self.patches = patches;
+                for patch in self.patches.iter_mut() {
+                    if let Some(&status) = previous.get(&patch.message_id) {
+                        patch.status = status;
+                    }
+                }
                 self.all_loaded = self.patches.len() < self.config.ui.page_size;
-                self.requested.clear();
-                self.rebuild_view();
+                self.rebuild_view_keeping(keep);
             }
             Err(err) => self.error = Some(err),
         }
@@ -308,7 +336,11 @@ impl App {
     }
 
     pub(crate) fn rebuild_view(&mut self) {
-        let selected_id = self.selected_patch_id();
+        let keep = self.selected_patch_id();
+        self.rebuild_view_keeping(keep);
+    }
+
+    fn rebuild_view_keeping(&mut self, keep: Option<String>) {
         self.superseded =
             series::superseded_flags(self.patches.iter().map(|p| p.subject.as_str()));
         self.groups = series::group(
@@ -317,7 +349,7 @@ impl App {
                 .map(|p| (p.subject.as_str(), p.message_id.as_str())),
         );
         self.rebuild_rows();
-        self.restore_selection(selected_id);
+        self.restore_selection(keep);
     }
 
     fn rebuild_rows(&mut self) {
@@ -582,6 +614,7 @@ impl App {
             KeyCode::PageUp => self.select_by(-10),
             KeyCode::Char(' ') => self.toggle_selected_group(),
             KeyCode::Char('m') => self.load_more(),
+            KeyCode::Char('R') => self.refresh(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
             _ => {}
         }
@@ -867,5 +900,23 @@ mod tests {
         assert!(!app.search_active);
         assert!(app.search.is_none());
         assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn refresh_keeps_known_statuses_and_adds_new() {
+        let mut app = test_app(0);
+        app.patches = vec![patch("[PATCH] a", "a@x"), patch("[PATCH] b", "b@x")];
+        app.patches[0].status = PatchStatus::Merged;
+        app.rebuild_view();
+
+        // A refresh returns the still-present a@x plus a brand-new c@x.
+        let refreshed = vec![patch("[PATCH] c new", "c@x"), patch("[PATCH] a", "a@x")];
+        app.on_patches_loaded(Ok(refreshed));
+
+        assert_eq!(app.patches.len(), 2);
+        let a = app.patches.iter().find(|p| p.message_id == "a@x").unwrap();
+        assert_eq!(a.status, PatchStatus::Merged); // carried over
+        let c = app.patches.iter().find(|p| p.message_id == "c@x").unwrap();
+        assert_eq!(c.status, PatchStatus::Unknown); // new -> will be probed
     }
 }

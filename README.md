@@ -79,6 +79,7 @@ Patch list (tab 0):
 | Ctrl+d / Ctrl+u           | half-page down / up             |
 | Enter / → / l             | open the selected thread        |
 | /                         | live search (Esc clears)        |
+| R                         | refresh (check for new patches) |
 | Space                     | expand / collapse a patch-set   |
 | m                         | load more patches (auto at end) |
 | Ctrl+n / Ctrl+p           | next / previous tab             |

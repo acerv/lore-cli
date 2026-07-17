@@ -352,7 +352,7 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             let mut spans = vec![
                 Span::styled(
-                    " ↑/↓ move  Enter open  / search  Space fold  Ctrl+n/p tab  q quit",
+                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  q quit",
                     dim(),
                 ),
                 Span::styled("  |  ", dim()),
@@ -367,6 +367,13 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled(format!("{} patches", app.patches.len()), dim()));
                 if app.loading_more {
                     spans.push(Span::styled(" +more", Style::default().fg(Color::Yellow)));
+                }
+                if app.refreshing {
+                    let spin = SPINNER[(app.tick % 4) as usize];
+                    spans.push(Span::styled(
+                        format!("  refreshing {spin}"),
+                        Style::default().fg(Color::Yellow),
+                    ));
                 }
             }
             if let Some(query) = &app.search {
