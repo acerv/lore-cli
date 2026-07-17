@@ -2,6 +2,8 @@ pub mod atom;
 pub mod mbox;
 pub mod status;
 
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 
@@ -10,6 +12,11 @@ use crate::config::LoreConfig;
 use crate::model::{Email, PatchEntry};
 
 const USER_AGENT: &str = concat!("lore-cli/", env!("CARGO_PKG_VERSION"));
+
+/// Bound how long a single request may take. Without this, a stalled connection
+/// would hold a status-probe concurrency slot forever and starve the pool.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// HTTP client for a specific lore/public-inbox server and project.
 #[derive(Clone)]
@@ -24,6 +31,8 @@ impl LoreClient {
     pub fn new(config: &LoreConfig) -> Result<Self> {
         let http = Client::builder()
             .user_agent(USER_AGENT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .context("building HTTP client")?;
         Ok(Self {

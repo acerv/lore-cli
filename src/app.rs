@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use ratatui::crossterm::event::{
     Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -11,6 +12,11 @@ use crate::config::Config;
 use crate::event::AppEvent;
 use crate::lore::LoreClient;
 use crate::model::{Email, PatchEntry, PatchStatus};
+
+/// How many times a status probe is attempted before giving up (leaves the
+/// patch grey). A retry recovers from transient network blips.
+const STATUS_FETCH_ATTEMPTS: usize = 2;
+const STATUS_RETRY_DELAY: Duration = Duration::from_millis(750);
 
 /// An open thread, shown in its own tab.
 pub struct ThreadTab {
@@ -162,9 +168,20 @@ impl App {
             let marker = marker.clone();
             tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await.ok();
-                if let Ok(emails) = client.fetch_thread(&message_id).await {
-                    let status = crate::lore::status::compute_status(&emails, &marker);
-                    let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
+                for attempt in 0..STATUS_FETCH_ATTEMPTS {
+                    match client.fetch_thread(&message_id).await {
+                        Ok(emails) => {
+                            let status = crate::lore::status::compute_status(&emails, &marker);
+                            let _ = tx.send(AppEvent::StatusUpdated { message_id, status });
+                            return;
+                        }
+                        // Retry transient failures; a timeout releases the
+                        // permit so the pool keeps flowing either way.
+                        Err(_) if attempt + 1 < STATUS_FETCH_ATTEMPTS => {
+                            tokio::time::sleep(STATUS_RETRY_DELAY).await;
+                        }
+                        Err(_) => {}
+                    }
                 }
             });
         }
