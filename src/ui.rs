@@ -98,11 +98,11 @@ fn status_color(status: PatchStatus) -> Color {
     }
 }
 
-/// Build one list row for the version tree.
+/// Build one list row for the patch-set tree.
 ///
-/// A head with older versions shows the version count (`▸N` collapsed / `▾N`
-/// expanded) in red at the very start; nested versions are indented. Merge and
-/// review state is conveyed by the row color.
+/// A patch-set head (a cover letter) shows the number of patches (`▸N`
+/// collapsed / `▾N` expanded) in red at the very start; members are indented.
+/// Merge and review state is conveyed by the row color.
 fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
@@ -119,12 +119,12 @@ fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     };
     let author = fit(&sanitize(author_raw), AUTHOR_W);
 
-    // Leading tag: red version count for a version-tree head, otherwise empty
+    // Leading tag: red patch count for a patch-set head, otherwise empty
     // (merge/review state is shown by the row color).
     let (tag, tag_style) = if row.depth == 0 && row.children > 0 {
         let arrow = if row.expanded { '▾' } else { '▸' };
         (
-            format!("{arrow}{}", row.children + 1),
+            format!("{arrow}{}", row.children),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )
     } else {
@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn version_count_shown_in_red_at_start() {
+    fn patch_set_count_shown_in_red() {
         let config = Config {
             lore: LoreConfig {
                 server: "https://lore.kernel.org".into(),
@@ -553,23 +553,18 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         app.loading_patches = false;
+        let mk = |subject: &str, id: &str| PatchEntry {
+            subject: subject.into(),
+            author_name: "Dev".into(),
+            author_email: "d@x".into(),
+            message_id: id.into(),
+            updated: None,
+            status: PatchStatus::Normal,
+        };
         app.patches = vec![
-            PatchEntry {
-                subject: "[PATCH v2] mm: fix".into(),
-                author_name: "Dev".into(),
-                author_email: "d@x".into(),
-                message_id: "v2@x".into(),
-                updated: None,
-                status: PatchStatus::Normal,
-            },
-            PatchEntry {
-                subject: "[PATCH] mm: fix".into(),
-                author_name: "Dev".into(),
-                author_email: "d@x".into(),
-                message_id: "v1@x".into(),
-                updated: None,
-                status: PatchStatus::Normal,
-            },
+            mk("[PATCH 0/2] cover", "msg-1-a@x"),
+            mk("[PATCH 1/2] one", "msg-2-a@x"),
+            mk("[PATCH 2/2] two", "msg-3-a@x"),
         ];
         app.rebuild_view();
         app.list_state.select(None);
@@ -578,9 +573,9 @@ mod tests {
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        // The head row (y=2) shows the version count in red.
-        assert!(row_has_fg(buffer, 2, Color::Red), "version count should be red");
+        // The patch-set head (y=2) shows the patch count in red.
+        assert!(row_has_fg(buffer, 2, Color::Red), "patch-set count should be red");
         let text = buffer_text(buffer);
-        assert!(text.contains("▸2"), "should show 2 versions at the start, got:\n{text}");
+        assert!(text.contains("▸2"), "should show 2 patches, got:\n{text}");
     }
 }

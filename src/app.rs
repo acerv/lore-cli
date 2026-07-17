@@ -272,41 +272,7 @@ impl App {
         }
     }
 
-    // ----- version tree ----------------------------------------------------
-
-    /// Rebuild the version grouping and visible rows from `patches`, preserving
-    /// the selected patch and the expand/collapse state.
-    pub(crate) fn rebuild_view(&mut self) {
-        let selected_id = self.selected_patch_id();
-        self.groups = series::group(self.patches.iter().map(|p| p.subject.as_str()));
-        self.rebuild_rows();
-        self.restore_selection(selected_id);
-    }
-
-    fn rebuild_rows(&mut self) {
-        self.rows.clear();
-        for (group_index, group) in self.groups.iter().enumerate() {
-            let expanded = self.expanded.contains(&group.key);
-            self.rows.push(Row {
-                patch: group.head,
-                depth: 0,
-                children: group.children.len(),
-                expanded,
-                group: group_index,
-            });
-            if expanded {
-                for &child in &group.children {
-                    self.rows.push(Row {
-                        patch: child,
-                        depth: 1,
-                        children: 0,
-                        expanded: false,
-                        group: group_index,
-                    });
-                }
-            }
-        }
-    }
+    // ----- patch-set tree ----------------------------------------------------
 
     fn selected_patch_id(&self) -> Option<String> {
         let row = self.rows.get(self.list_state.selected()?)?;
@@ -332,22 +298,59 @@ impl App {
         self.rows.get(self.list_state.selected()?).copied()
     }
 
-    /// Expand or collapse the version tree under the selection (Space).
+    pub(crate) fn rebuild_view(&mut self) {
+        let selected_id = self.selected_patch_id();
+        self.groups = series::group(
+            self.patches
+                .iter()
+                .map(|p| (p.subject.as_str(), p.message_id.as_str())),
+        );
+        self.rebuild_rows();
+        self.restore_selection(selected_id);
+    }
+
+    fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        for (group_index, group) in self.groups.iter().enumerate() {
+            let key = self.patches[group.head].message_id.clone();
+            let expanded = self.expanded.contains(&key);
+            self.rows.push(Row {
+                patch: group.head,
+                depth: 0,
+                children: group.children.len(),
+                expanded,
+                group: group_index,
+            });
+            if expanded {
+                for &child in &group.children {
+                    self.rows.push(Row {
+                        patch: child,
+                        depth: 1,
+                        children: 0,
+                        expanded: false,
+                        group: group_index,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Expand or collapse the patch-set under the selection (Space).
     fn toggle_selected_group(&mut self) {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let key = self.groups[row.group].key.clone();
+        if row.depth == 0 && row.children == 0 {
+            return; // a standalone patch has nothing to fold
+        }
+        let key = self.patches[self.groups[row.group].head].message_id.clone();
         if row.depth == 0 {
-            if row.children == 0 {
-                return; // a standalone patch has nothing to fold
-            }
             if !self.expanded.remove(&key) {
                 self.expanded.insert(key);
             }
             self.rebuild_rows();
         } else {
-            // On a nested version: collapse the group and select its head.
+            // On a member row: collapse the set and select its cover.
             self.expanded.remove(&key);
             self.rebuild_rows();
             if let Some(head_row) = self.rows.iter().position(|r| r.group == row.group) {
@@ -683,26 +686,27 @@ mod tests {
     }
 
     #[test]
-    fn version_tree_folds_and_unfolds() {
+    fn patch_set_folds_and_unfolds() {
         let mut app = test_app(0);
         app.patches = vec![
-            patch("[PATCH v2] mm: fix foo", "v2@x"),
-            patch("[PATCH] mm: fix foo", "v1@x"),
-            patch("[PATCH] other: bar", "other@x"),
+            patch("[PATCH 2/2] two", "msg-3-a@x"),
+            patch("[PATCH 1/2] one", "msg-2-a@x"),
+            patch("[PATCH 0/2] cover", "msg-1-a@x"),
+            patch("[PATCH] standalone", "solo-1-b@x"),
         ];
         app.rebuild_view();
 
-        // v2+v1 collapse into a single head; "other" stands alone => 2 rows.
+        // The cover + 2 members collapse into one head; standalone stays => 2 rows.
         assert_eq!(app.rows.len(), 2);
         assert_eq!(app.rows[0].depth, 0);
-        assert_eq!(app.rows[0].children, 1);
+        assert_eq!(app.rows[0].children, 2);
 
-        // Space expands the tree, revealing the nested v1.
+        // Space expands the patch-set, revealing the two members.
         app.list_state.select(Some(0));
         app.toggle_selected_group();
-        assert_eq!(app.rows.len(), 3);
+        assert_eq!(app.rows.len(), 4);
         assert_eq!(app.rows[1].depth, 1);
-        assert_eq!(app.patches[app.rows[1].patch].message_id, "v1@x");
+        assert_eq!(app.patches[app.rows[1].patch].message_id, "msg-2-a@x"); // 1/2
 
         // Space again collapses it.
         app.toggle_selected_group();
@@ -710,19 +714,20 @@ mod tests {
     }
 
     #[test]
-    fn nested_and_head_rows_map_to_their_own_patches() {
+    fn patch_set_rows_map_to_their_own_patches() {
         let mut app = test_app(0);
         app.patches = vec![
-            patch("[PATCH v2] mm: fix foo", "v2@x"),
-            patch("[PATCH] mm: fix foo", "v1@x"),
+            patch("[PATCH 1/1] only", "msg-2-a@x"),
+            patch("[PATCH 0/1] cover", "msg-1-a@x"),
         ];
         app.rebuild_view();
-        app.expanded.insert("mm: fix foo".into());
+        // Expand the cover (keyed by its message-id).
+        app.expanded.insert("msg-1-a@x".into());
         app.rebuild_rows();
 
-        // Enter on either row opens that version's own thread.
-        assert_eq!(app.patches[app.rows[0].patch].message_id, "v2@x");
-        assert_eq!(app.patches[app.rows[1].patch].message_id, "v1@x");
+        // Enter on either row opens that message's own thread.
+        assert_eq!(app.patches[app.rows[0].patch].message_id, "msg-1-a@x");
+        assert_eq!(app.patches[app.rows[1].patch].message_id, "msg-2-a@x");
     }
 
     #[test]

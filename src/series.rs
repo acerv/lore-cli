@@ -1,107 +1,124 @@
 use std::collections::HashMap;
 
-/// A version group derived from patch subjects: the newest version is the head,
-/// older versions are its children.
+/// A grouping of the patch list: a standalone patch (no children) or a
+/// patch-set whose cover letter (`0/N`) is the head and whose member patches
+/// are the children.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
-    pub key: String,
-    /// Index (into the input list) of the newest version.
+    /// Index (into the input) of the root row: a standalone patch or a cover.
     pub head: usize,
-    /// Indices of older versions, newest-first.
+    /// Indices of the patch-set members (empty for a standalone patch), ordered
+    /// by patch number.
     pub children: Vec<usize>,
 }
 
-/// Parse a patch subject into its `(version, series-key)`.
-///
-/// All leading `[...]` tags are stripped (so a list prefix like `[LTP]` before
-/// the `[PATCH vN ...]` tag is handled); the version is the `vN` token found in
-/// any of them (default 1), and the key is the normalized title that follows.
-pub fn parse(subject: &str) -> (u32, String) {
+/// Parse the `k/N` numbers from a subject's leading `[...]` tags.
+pub fn parse_part(subject: &str) -> Option<(u32, u32)> {
     let mut rest = subject.trim();
-    let mut version = 1;
-    let mut found_version = false;
-
     while let Some(inner) = rest.strip_prefix('[') {
         let Some(close) = inner.find(']') else {
             break;
         };
-        if !found_version {
-            if let Some(v) = inner[..close]
-                .split(|c: char| c.is_whitespace() || c == ',')
-                .find_map(parse_version_token)
-            {
-                version = v;
-                found_version = true;
+        for token in inner[..close].split(|c: char| c.is_whitespace() || c == ',') {
+            if let Some((k, n)) = token.split_once('/') {
+                if let (Ok(k), Ok(n)) = (k.parse::<u32>(), n.parse::<u32>()) {
+                    return Some((k, n));
+                }
             }
         }
         rest = inner[close + 1..].trim_start();
     }
-
-    let title = rest.trim();
-    if title.is_empty() {
-        return (version, normalize(subject.trim()));
-    }
-    (version, normalize(title))
+    None
 }
 
-fn parse_version_token(token: &str) -> Option<u32> {
-    let digits = token.strip_prefix('v').or_else(|| token.strip_prefix('V'))?;
-    digits.parse::<u32>().ok()
-}
-
-fn normalize(title: &str) -> String {
-    title.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
-}
-
-/// Group subjects into version trees.
-///
-/// Patches sharing a key are nested **only** when they span more than one
-/// version (so unrelated same-titled `v1` patches stay separate). Groups are
-/// ordered by their head's position in the input (newest-first upstream).
-pub fn group<'a>(subjects: impl IntoIterator<Item = &'a str>) -> Vec<Group> {
-    let mut order: Vec<String> = Vec::new();
-    let mut members: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
-
-    for (index, subject) in subjects.into_iter().enumerate() {
-        let (version, key) = parse(subject);
-        members
-            .entry(key.clone())
-            .or_insert_with(|| {
-                order.push(key.clone());
-                Vec::new()
-            })
-            .push((index, version));
-    }
-
-    let mut groups: Vec<Group> = Vec::new();
-    for key in order {
-        let mut list = members.remove(&key).unwrap_or_default();
-        let distinct_versions = {
-            let mut versions: Vec<u32> = list.iter().map(|&(_, v)| v).collect();
-            versions.sort_unstable();
-            versions.dedup();
-            versions.len()
-        };
-
-        if distinct_versions > 1 {
-            // Newest version first; ties resolved by earliest position.
-            list.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            let head = list[0].0;
-            let children = list[1..].iter().map(|&(i, _)| i).collect();
-            groups.push(Group { key, head, children });
-        } else {
-            // Single version throughout: not a version relationship.
-            for (index, _) in list {
-                groups.push(Group {
-                    key: key.clone(),
-                    head: index,
-                    children: Vec::new(),
-                });
+/// Derive a series key from a message-id by collapsing the git-send-email
+/// sequence number (`...-<seq>-...`), so every message of one series matches.
+fn series_stem(message_id: &str) -> String {
+    let chars: Vec<char> = message_id.chars().collect();
+    let mut found: Option<(usize, usize)> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '-' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
             }
+            if j > i + 1 && j < chars.len() && chars[j] == '-' {
+                found = Some((i, j)); // collapse chars[i..=j] into a single '-'
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    match found {
+        Some((start, end)) => {
+            let mut key: String = chars[..start].iter().collect();
+            key.push('-');
+            key.extend(&chars[end + 1..]);
+            key
+        }
+        None => message_id.to_string(),
+    }
+}
+
+/// Group `(subject, message_id)` pairs into standalone patches and patch-sets.
+///
+/// A cover letter (`0/N`) becomes a patch-set head; its members are the other
+/// messages sharing the same series stem with a part number `>= 1`. Everything
+/// else (standalone patches, or series members whose cover isn't present) stays
+/// a top-level root. Groups are ordered by their newest (lowest-index) member.
+pub fn group<'a>(items: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Group> {
+    let entries: Vec<(Option<(u32, u32)>, String)> = items
+        .into_iter()
+        .map(|(subject, message_id)| (parse_part(subject), series_stem(message_id)))
+        .collect();
+
+    let mut by_stem: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut cover: HashMap<&str, usize> = HashMap::new();
+    for (i, (part, stem)) in entries.iter().enumerate() {
+        by_stem.entry(stem.as_str()).or_default().push(i);
+        if matches!(part, Some((0, _))) {
+            cover.entry(stem.as_str()).or_insert(i);
         }
     }
 
-    groups.sort_by_key(|g| g.head);
+    let mut consumed = vec![false; entries.len()];
+    let mut groups: Vec<Group> = Vec::new();
+
+    // Each cover letter becomes a patch-set with its members as children.
+    for (i, (part, stem)) in entries.iter().enumerate() {
+        if matches!(part, Some((0, _))) && cover.get(stem.as_str()) == Some(&i) {
+            let mut children: Vec<usize> = by_stem[stem.as_str()]
+                .iter()
+                .copied()
+                .filter(|&j| j != i && matches!(entries[j].0, Some((k, _)) if k >= 1))
+                .collect();
+            children.sort_by_key(|&j| entries[j].0.map(|(k, _)| k).unwrap_or(0));
+            consumed[i] = true;
+            for &j in &children {
+                consumed[j] = true;
+            }
+            groups.push(Group { head: i, children });
+        }
+    }
+
+    // Everything not pulled into a patch-set is a standalone root.
+    for (i, &done) in consumed.iter().enumerate() {
+        if !done {
+            groups.push(Group { head: i, children: Vec::new() });
+        }
+    }
+
+    // Order each group by its newest (lowest-index) member.
+    groups.sort_by_key(|g| {
+        g.children
+            .iter()
+            .copied()
+            .chain(std::iter::once(g.head))
+            .min()
+            .unwrap_or(g.head)
+    });
     groups
 }
 
@@ -110,87 +127,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_extracts_version_and_key() {
-        assert_eq!(parse("[PATCH] mm: fix"), (1, "mm: fix".into()));
-        assert_eq!(parse("[PATCH v2] mm: fix"), (2, "mm: fix".into()));
-        assert_eq!(parse("[PATCH v3 2/5] mm: fix foo"), (3, "mm: fix foo".into()));
-        assert_eq!(parse("[RFC PATCH v2 19/20] drm: x"), (2, "drm: x".into()));
-        assert_eq!(parse("[PATCH 1/2] mm: a"), (1, "mm: a".into()));
-        assert_eq!(parse("No brackets here"), (1, "no brackets here".into()));
+    fn parse_part_reads_k_of_n() {
+        assert_eq!(parse_part("[PATCH 0/3] cover"), Some((0, 3)));
+        assert_eq!(parse_part("[PATCH 2/3] foo"), Some((2, 3)));
+        assert_eq!(parse_part("[LTP] [PATCH v2 1/2] bar"), Some((1, 2)));
+        assert_eq!(parse_part("[PATCH] standalone"), None);
+        assert_eq!(parse_part("No tags at all"), None);
     }
 
     #[test]
-    fn parse_ignores_case_and_whitespace_in_title() {
-        assert_eq!(parse("[PATCH V4]   Mm:   Fix "), (4, "mm: fix".into()));
-    }
-
-    #[test]
-    fn parse_strips_leading_list_tag() {
+    fn series_stem_collapses_sequence_number() {
         assert_eq!(
-            parse("[LTP] [PATCH v2 2/2] syscalls/foo: add test"),
-            (2, "syscalls/foo: add test".into())
+            series_stem("20260716.368565-1-a@amd.com"),
+            series_stem("20260716.368565-3-a@amd.com")
         );
-        assert_eq!(
-            parse("[LTP] [PATCH 2/2] syscalls/foo: add test"),
-            (1, "syscalls/foo: add test".into())
-        );
+        assert_ne!(series_stem("aaa-1-a@x"), series_stem("bbb-1-a@x"));
+        assert_eq!(series_stem("no-sequence@x"), "no-sequence@x");
     }
 
     #[test]
-    fn groups_versions_behind_a_list_tag() {
+    fn cover_becomes_patchset_with_members() {
         let groups = group([
-            "[LTP] [PATCH v2 2/2] syscalls/foo: add test",
-            "[LTP] [PATCH 2/2] syscalls/foo: add test",
+            ("[PATCH 2/2] two", "msg-3-a@x"),
+            ("[PATCH 1/2] one", "msg-2-a@x"),
+            ("[PATCH 0/2] cover", "msg-1-a@x"),
         ]);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].head, 0); // v2
-        assert_eq!(groups[0].children, vec![1]); // v1
+        assert_eq!(groups[0].head, 2); // the cover
+        assert_eq!(groups[0].children, vec![1, 0]); // 1/2 then 2/2
     }
 
     #[test]
-    fn groups_versions_of_the_same_patch() {
-        let groups = group(["[PATCH v2] mm: fix", "[PATCH] mm: fix"]);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].head, 0); // v2 is the head
-        assert_eq!(groups[0].children, vec![1]); // v1 nested
-    }
-
-    #[test]
-    fn head_is_highest_version_regardless_of_position() {
-        // Unusual order: v1, unrelated, v2.
+    fn standalone_patches_are_separate() {
         let groups = group([
-            "[PATCH] mm: fix",
-            "[PATCH] other: z",
-            "[PATCH v2] mm: fix",
+            ("[PATCH] a fix", "x-1-a@x"),
+            ("[PATCH] b fix", "y-1-b@x"),
         ]);
-        let mm = groups.iter().find(|g| g.key == "mm: fix").unwrap();
-        assert_eq!(mm.head, 2);
-        assert_eq!(mm.children, vec![0]);
-    }
-
-    #[test]
-    fn same_version_duplicates_stay_separate() {
-        let groups = group(["[PATCH] mm: fix", "[PATCH] mm: fix"]);
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().all(|g| g.children.is_empty()));
     }
 
     #[test]
-    fn unrelated_patches_are_not_grouped() {
-        let groups = group(["[PATCH] a: x", "[PATCH v2] b: y"]);
+    fn members_without_a_cover_stay_separate() {
+        let groups = group([
+            ("[PATCH 1/2] one", "msg-1-a@x"),
+            ("[PATCH 2/2] two", "msg-2-a@x"),
+        ]);
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().all(|g| g.children.is_empty()));
     }
 
     #[test]
-    fn three_versions_nest_newest_first() {
+    fn patchset_sorts_to_its_newest_member() {
+        // newest-first: 2/2, unrelated, 1/2, cover
         let groups = group([
-            "[PATCH v3] mm: fix",
-            "[PATCH v2] mm: fix",
-            "[PATCH] mm: fix",
+            ("[PATCH 2/2] two", "msg-3-a@x"),
+            ("[PATCH] unrelated", "u-1-z@x"),
+            ("[PATCH 1/2] one", "msg-2-a@x"),
+            ("[PATCH 0/2] cover", "msg-1-a@x"),
         ]);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].head, 0); // v3
-        assert_eq!(groups[0].children, vec![1, 2]); // v2 then v1
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].head, 3); // cover heads the set
+        assert_eq!(groups[0].children, vec![2, 0]);
+        assert_eq!(groups[1].head, 1); // unrelated standalone
     }
 }
