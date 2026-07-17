@@ -1,0 +1,19 @@
+[package]
+name = "lore-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.103"
+chrono = "0.4.45"
+directories = "6.0.0"
+feed-rs = "2.4.0"
+flate2 = "1.1.9"
+mailparse = "0.16.1"
+percent-encoding = "2.3.2"
+ratatui = "0.29"
+reqwest = "0.13.4"
+serde = { version = "1.0.228", features = ["derive"] }
+textwrap = "0.16.2"
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
+toml = "1.1.3"
