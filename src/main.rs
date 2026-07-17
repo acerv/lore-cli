@@ -61,5 +61,23 @@ async fn main() -> Result<()> {
             p.message_id,
         );
     }
+
+    if let Some(first) = patches.first() {
+        println!("\n--- thread for: {} ---", first.subject);
+        let emails = client.fetch_thread(&first.message_id).await?;
+        println!("thread has {} message(s)", emails.len());
+        for (i, e) in emails.iter().enumerate() {
+            println!(
+                "  {}. subj={:?} from={:?} date={:?} id={:?} irt={:?} body={}B",
+                i + 1,
+                e.subject,
+                e.from,
+                e.date,
+                e.message_id,
+                e.in_reply_to,
+                e.body.len(),
+            );
+        }
+    }
     Ok(())
 }

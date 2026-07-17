@@ -27,3 +27,14 @@ pub struct PatchEntry {
     pub updated: Option<DateTime<Utc>>,
     pub status: PatchStatus,
 }
+
+/// A single email within a thread.
+#[derive(Debug, Clone)]
+pub struct Email {
+    pub from: String,
+    pub date: String,
+    pub subject: String,
+    pub message_id: String,
+    pub in_reply_to: Option<String>,
+    pub body: String,
+}

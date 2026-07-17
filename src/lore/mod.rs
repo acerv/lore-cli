@@ -1,10 +1,11 @@
 pub mod atom;
+pub mod mbox;
 
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 
 use crate::config::LoreConfig;
-use crate::model::PatchEntry;
+use crate::model::{Email, PatchEntry};
 
 const USER_AGENT: &str = concat!("lore-cli/", env!("CARGO_PKG_VERSION"));
 
@@ -59,5 +60,21 @@ impl LoreClient {
         }
         let bytes = resp.bytes().await.context("reading atom feed body")?;
         atom::parse_patch_list(&bytes, &self.project)
+    }
+
+    /// Fetch and parse the whole thread for a patch.
+    pub async fn fetch_thread(&self, message_id: &str) -> Result<Vec<Email>> {
+        let url = self.thread_mbox_url(message_id);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("requesting {url}"))?;
+        if !resp.status().is_success() {
+            bail!("server returned {} for {}", resp.status(), url);
+        }
+        let bytes = resp.bytes().await.context("reading thread mbox body")?;
+        mbox::parse_thread_mbox(&bytes)
     }
 }
