@@ -45,14 +45,11 @@ fn parse_args() -> Result<Args> {
 
 /// Spawn a blocking thread that forwards terminal input over the channel.
 fn spawn_input_reader(tx: UnboundedSender<AppEvent>) {
-    std::thread::spawn(move || loop {
-        match ratatui::crossterm::event::read() {
-            Ok(event) => {
-                if tx.send(AppEvent::Input(event)).is_err() {
-                    break;
-                }
+    std::thread::spawn(move || {
+        while let Ok(event) = ratatui::crossterm::event::read() {
+            if tx.send(AppEvent::Input(event)).is_err() {
+                break;
             }
-            Err(_) => break,
         }
     });
 }

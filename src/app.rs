@@ -128,20 +128,17 @@ impl App {
 
     pub fn on_more_loaded(&mut self, result: Result<Vec<PatchEntry>, String>) {
         self.loading_more = false;
-        match result {
-            Ok(mut more) => {
-                if more.len() < self.config.ui.page_size {
-                    self.all_loaded = true;
-                }
-                if more.is_empty() {
-                    return;
-                }
-                let start = self.patches.len();
-                self.patches.append(&mut more);
-                self.spawn_status_fetches(start);
+        // A failed "load more" is non-fatal: just allow retrying later.
+        if let Ok(mut more) = result {
+            if more.len() < self.config.ui.page_size {
+                self.all_loaded = true;
             }
-            // A failed "load more" is non-fatal: just allow retrying later.
-            Err(_) => {}
+            if more.is_empty() {
+                return;
+            }
+            let start = self.patches.len();
+            self.patches.append(&mut more);
+            self.spawn_status_fetches(start);
         }
     }
 
