@@ -102,14 +102,16 @@ fn status_marker(status: PatchStatus) -> char {
     }
 }
 
-/// Build one list row for the version tree: nested versions are indented, and
-/// a head with older versions gets a fold marker (`▸N` / `▾`) after the subject.
+/// Build one list row for the version tree.
+///
+/// A head with older versions shows the version count (`▸N` collapsed / `▾N`
+/// expanded) in red at the very start, in place of the status marker; nested
+/// versions are indented and keep their own status marker.
 fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
 
     let color = status_color(patch.status);
-    let marker = status_marker(patch.status);
     let date = patch
         .updated
         .map(|d| d.format("%Y-%m-%d").to_string())
@@ -121,27 +123,28 @@ fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     };
     let author = fit(&sanitize(author_raw), AUTHOR_W);
 
-    let (prefix, suffix) = if row.depth > 0 {
-        ("  └ ".to_string(), String::new())
-    } else if row.children > 0 {
-        let toggle = if row.expanded {
-            " ▾".to_string()
-        } else {
-            format!(" ▸{}", row.children)
-        };
-        (String::new(), toggle)
+    // Leading tag: red version count for a version-tree head, otherwise the
+    // status marker in the status color.
+    let (tag, tag_style) = if row.depth == 0 && row.children > 0 {
+        let arrow = if row.expanded { '▾' } else { '▸' };
+        (
+            format!("{arrow}{}", row.children + 1),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
     } else {
-        (String::new(), String::new())
+        (
+            status_marker(patch.status).to_string(),
+            Style::default().fg(color),
+        )
     };
 
-    // symbol(2) + marker(2) + subject + ' '(1) + author + ' '(1) + date
-    let subject_w = width.saturating_sub(2 + 2 + AUTHOR_W + DATE_W + 2).max(4);
-    let deco = prefix.chars().count() + suffix.chars().count();
-    let subject = fit(&patch.subject, subject_w.saturating_sub(deco).max(1));
-    let subject_cell = format!("{prefix}{subject}{suffix}");
+    let prefix = if row.depth > 0 { "  └ " } else { "" };
+    let subject_w = width.saturating_sub(39).max(4);
+    let subject = fit(&patch.subject, subject_w.saturating_sub(prefix.chars().count()).max(1));
+    let subject_cell = format!("{prefix}{subject}");
 
     Line::from(vec![
-        Span::styled(format!("{marker} "), Style::default().fg(color)),
+        Span::styled(format!("{tag:<2} "), tag_style),
         Span::styled(format!("{subject_cell:<subject_w$} "), Style::default().fg(color)),
         Span::styled(format!("{author:<AUTHOR_W$} "), dim()),
         Span::styled(date, Style::default().fg(Color::Cyan)),
@@ -521,5 +524,50 @@ mod tests {
         assert!(text.contains("Alice"), "thread should show the sender");
         assert!(text.contains("Reviewed-by: Bob"), "thread should show the body");
         assert!(!text.contains('\t'), "tabs must be expanded, never rendered raw");
+    }
+
+    #[test]
+    fn version_count_shown_in_red_at_start() {
+        let config = Config {
+            lore: LoreConfig {
+                server: "https://lore.kernel.org".into(),
+                project: "test".into(),
+            },
+            ui: UiConfig::default(),
+            status: StatusConfig::default(),
+        };
+        let client = LoreClient::new(&config.lore).unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut app = App::new(config, client, tx);
+        app.loading_patches = false;
+        app.patches = vec![
+            PatchEntry {
+                subject: "[PATCH v2] mm: fix".into(),
+                author_name: "Dev".into(),
+                author_email: "d@x".into(),
+                message_id: "v2@x".into(),
+                updated: None,
+                status: PatchStatus::Normal,
+            },
+            PatchEntry {
+                subject: "[PATCH] mm: fix".into(),
+                author_name: "Dev".into(),
+                author_email: "d@x".into(),
+                message_id: "v1@x".into(),
+                updated: None,
+                status: PatchStatus::Normal,
+            },
+        ];
+        app.rebuild_view();
+        app.list_state.select(None);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // The head row (y=2) shows the version count in red.
+        assert!(row_has_fg(buffer, 2, Color::Red), "version count should be red");
+        let text = buffer_text(buffer);
+        assert!(text.contains("▸2"), "should show 2 versions at the start, got:\n{text}");
     }
 }
