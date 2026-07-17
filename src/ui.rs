@@ -95,19 +95,11 @@ fn status_color(status: PatchStatus) -> Color {
     }
 }
 
-fn status_marker(status: PatchStatus) -> char {
-    match status {
-        PatchStatus::Merged => 'M',
-        PatchStatus::Reviewed => 'R',
-        PatchStatus::Normal | PatchStatus::Unknown => ' ',
-    }
-}
-
 /// Build one list row for the version tree.
 ///
 /// A head with older versions shows the version count (`▸N` collapsed / `▾N`
-/// expanded) in red at the very start, in place of the status marker; nested
-/// versions are indented and keep their own status marker.
+/// expanded) in red at the very start; nested versions are indented. Merge and
+/// review state is conveyed by the row color.
 fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
@@ -124,8 +116,8 @@ fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
     };
     let author = fit(&sanitize(author_raw), AUTHOR_W);
 
-    // Leading tag: red version count for a version-tree head, otherwise the
-    // status marker in the status color.
+    // Leading tag: red version count for a version-tree head, otherwise empty
+    // (merge/review state is shown by the row color).
     let (tag, tag_style) = if row.depth == 0 && row.children > 0 {
         let arrow = if row.expanded { '▾' } else { '▸' };
         (
@@ -133,10 +125,7 @@ fn tree_row(patch: &PatchEntry, row: &Row, width: usize) -> Line<'static> {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )
     } else {
-        (
-            status_marker(patch.status).to_string(),
-            Style::default().fg(color),
-        )
+        (String::new(), Style::default())
     };
 
     let prefix = if row.depth > 0 { "  └ " } else { "" };
