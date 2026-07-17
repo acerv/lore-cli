@@ -1,4 +1,6 @@
 mod config;
+mod lore;
+mod model;
 
 use std::path::PathBuf;
 
@@ -30,12 +32,34 @@ fn parse_args() -> Result<Args> {
     Ok(Args { config_path })
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = parse_args()?;
     let config = Config::load(&args.config_path)?;
+    let client = lore::LoreClient::new(&config.lore)?;
+
+    let patches = client.fetch_patch_list(0).await?;
     println!(
-        "Loaded config: server={} project={} (page_size={}, status_concurrency={})",
-        config.lore.server, config.lore.project, config.ui.page_size, config.ui.status_concurrency,
+        "Fetched {} patches from {}/{}\n",
+        patches.len(),
+        config.lore.server,
+        config.lore.project
     );
+    for (i, p) in patches.iter().take(20).enumerate() {
+        let date = p
+            .updated
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+        println!(
+            "{:>3}. [{:?}] {}\n     {} <{}>  {}  id={}",
+            i + 1,
+            p.status,
+            p.subject,
+            p.author_name,
+            p.author_email,
+            date,
+            p.message_id,
+        );
+    }
     Ok(())
 }
