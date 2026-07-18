@@ -352,7 +352,7 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             let mut spans = vec![
                 Span::styled(
-                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  q quit",
+                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  N latest  q quit",
                     dim(),
                 ),
                 Span::styled("  |  ", dim()),
@@ -383,6 +383,13 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Yellow),
                 ));
             } else {
+                if app.latest_only {
+                    spans.push(Span::styled("  |  ", dim()));
+                    spans.push(Span::styled(
+                        "latest",
+                        Style::default().fg(Color::Cyan),
+                    ));
+                }
                 spans.push(Span::styled("  |  ", dim()));
                 spans.push(Span::styled("merged", Style::default().fg(Color::Green)));
                 spans.push(Span::styled("  ", dim()));

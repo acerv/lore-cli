@@ -113,6 +113,8 @@ pub struct App {
     pub search: Option<String>,
     /// Whether the search box is currently being typed into.
     pub search_active: bool,
+    /// Toggle: show only the latest version of each patch (hide superseded children).
+    pub latest_only: bool,
 }
 
 impl App {
@@ -144,6 +146,7 @@ impl App {
             list_height: 0,
             search: None,
             search_active: false,
+            latest_only: false,
         }
     }
 
@@ -216,8 +219,24 @@ impl App {
     }
 
     pub fn on_status_updated(&mut self, message_id: &str, status: PatchStatus) {
-        if let Some(patch) = self.patches.iter_mut().find(|p| p.message_id == message_id) {
-            patch.status = status;
+        let changed = self
+            .patches
+            .iter_mut()
+            .find(|p| p.message_id == message_id)
+            .map(|patch| {
+                if patch.status != status {
+                    patch.status = status;
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
+        // In latest-only mode a Reviewed/Merged patch should drop out of the
+        // list as soon as its status is determined; rebuild to reflect that.
+        if changed && self.latest_only {
+            self.rebuild_view();
         }
     }
 
@@ -363,7 +382,9 @@ impl App {
             .map(|q| q.to_lowercase());
         if let Some(query) = filter {
             for (i, patch) in self.patches.iter().enumerate() {
-                if patch.subject.to_lowercase().contains(&query) {
+                if patch.subject.to_lowercase().contains(&query)
+                    && !self.is_hidden_by_latest(i)
+                {
                     self.rows.push(Row {
                         patch: i,
                         depth: 0,
@@ -377,8 +398,12 @@ impl App {
         }
 
         for (group_index, group) in self.groups.iter().enumerate() {
+            // Skip the whole group when its head is filtered out by latest-only.
+            if self.is_hidden_by_latest(group.head) {
+                continue;
+            }
             let key = self.patches[group.head].message_id.clone();
-            let expanded = self.expanded.contains(&key);
+            let expanded = self.expanded.contains(&key) && !self.latest_only;
             self.rows.push(Row {
                 patch: group.head,
                 depth: 0,
@@ -398,6 +423,26 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Whether the patch at `index` should be hidden in latest-only mode: an
+    /// older version (superseded), or already reviewed/merged.
+    fn is_hidden_by_latest(&self, index: usize) -> bool {
+        if !self.latest_only {
+            return false;
+        }
+        if self
+            .superseded
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        matches!(
+            self.patches.get(index).map(|p| p.status),
+            Some(PatchStatus::Reviewed) | Some(PatchStatus::Merged)
+        )
     }
 
     /// Expand or collapse the patch-set under the selection (Space).
@@ -422,6 +467,13 @@ impl App {
                 self.list_state.select(Some(head_row));
             }
         }
+    }
+
+    fn toggle_latest_only(&mut self) {
+        self.latest_only = !self.latest_only;
+        let keep = self.selected_patch_id();
+        self.rebuild_rows();
+        self.restore_selection(keep);
     }
 
     // ----- patch list navigation -------------------------------------------
@@ -615,6 +667,7 @@ impl App {
             KeyCode::Char(' ') => self.toggle_selected_group(),
             KeyCode::Char('m') => self.load_more(),
             KeyCode::Char('R') => self.refresh(),
+            KeyCode::Char('N') => self.toggle_latest_only(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
             _ => {}
         }
@@ -828,6 +881,138 @@ mod tests {
         // Space again collapses it.
         app.toggle_selected_group();
         assert_eq!(app.rows.len(), 2);
+    }
+
+    #[test]
+    fn latest_only_toggle_hides_and_restores_children() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = test_app(0);
+        app.patches = vec![
+            patch("[PATCH 2/2] two", "msg-3-a@x"),
+            patch("[PATCH 1/2] one", "msg-2-a@x"),
+            patch("[PATCH 0/2] cover", "msg-1-a@x"),
+        ];
+        app.rebuild_view();
+
+        // Start with the group expanded.
+        app.list_state.select(Some(0));
+        app.toggle_selected_group();
+        assert_eq!(app.rows.len(), 3);
+        assert!(app.rows[0].expanded);
+
+        // Toggle latest_only via the N key.
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.handle_crossterm(key('N'));
+        assert!(app.latest_only);
+        assert_eq!(app.rows.len(), 1); // children hidden
+        assert_eq!(app.rows[0].children, 2);
+
+        // Selection should still be valid.
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        // Toggle back: children restored, expanded state preserved.
+        app.handle_crossterm(key('N'));
+        assert!(!app.latest_only);
+        assert_eq!(app.rows.len(), 3);
+        assert!(app.rows[0].expanded);
+
+        // Collapse, toggle latest_only, toggle back — still collapsed.
+        app.toggle_selected_group();
+        assert_eq!(app.rows.len(), 1);
+        app.handle_crossterm(key('N'));
+        app.handle_crossterm(key('N'));
+        assert_eq!(app.rows.len(), 1); // still collapsed
+    }
+
+    #[test]
+    fn latest_only_hides_superseded_standalone_patches() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = test_app(0);
+        // Two versions of the same standalone patch (no cover letter => two
+        // separate groups) + one unrelated standalone patch.
+        app.patches = vec![
+            patch("[PATCH v2] mm: fix", "b@x"),     // latest, not superseded
+            patch("[PATCH] mm: fix", "a@x"),        // v1, superseded
+            patch("[PATCH] net: unrelated", "c@x"), // standalone, not superseded
+        ];
+        app.rebuild_view();
+
+        // No groups are expanded: all three rows are visible by default.
+        assert_eq!(app.rows.len(), 3);
+
+        // Pressing N hides the superseded v1, leaving the latest two.
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.handle_crossterm(key('N'));
+        assert!(app.latest_only);
+        assert_eq!(app.rows.len(), 2);
+        let visible: Vec<&str> = app
+            .rows
+            .iter()
+            .map(|r| app.patches[r.patch].message_id.as_str())
+            .collect();
+        assert!(visible.contains(&"b@x"), "v2 (latest) must be visible");
+        assert!(visible.contains(&"c@x"), "unrelated must be visible");
+        assert!(
+            !visible.contains(&"a@x"),
+            "superseded v1 must be hidden, got {visible:?}"
+        );
+
+        // Toggling back brings the superseded v1 back.
+        app.handle_crossterm(key('N'));
+        assert!(!app.latest_only);
+        assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn latest_only_hides_reviewed_and_merged_patches() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = test_app(0);
+        // Three standalone patches with already-known statuses.
+        let mk = |subject: &str, id: &str, status: PatchStatus| PatchEntry {
+            subject: subject.into(),
+            author_name: "Dev".into(),
+            author_email: "d@x".into(),
+            message_id: id.into(),
+            updated: None,
+            status,
+        };
+        app.patches = vec![
+            mk("[PATCH] open", "open@x", PatchStatus::Normal),
+            mk("[PATCH] reviewed", "rev@x", PatchStatus::Reviewed),
+            mk("[PATCH] merged", "mrg@x", PatchStatus::Merged),
+        ];
+        app.rebuild_view();
+        assert_eq!(app.rows.len(), 3);
+
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        app.handle_crossterm(key('N'));
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.patches[app.rows[0].patch].message_id, "open@x");
+
+        // Toggle back: all three return.
+        app.handle_crossterm(key('N'));
+        assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn latest_only_drops_patch_when_status_becomes_merged() {
+        // start with latest_only on and an open patch visible; a status update
+        // to Merged should remove it from the list.
+        let mut app = test_app(0);
+        app.patches = vec![patch("[PATCH] open", "a@x")];
+        app.patches[0].status = PatchStatus::Normal;
+        app.rebuild_view();
+
+        app.latest_only = true;
+        app.rebuild_view();
+        assert_eq!(app.rows.len(), 1);
+
+        // Simulate an async status probe returning Merged.
+        app.on_status_updated("a@x", PatchStatus::Merged);
+        assert_eq!(app.rows.len(), 0);
     }
 
     #[test]
