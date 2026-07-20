@@ -7,6 +7,10 @@ A terminal UI for browsing patches from a [lore](https://lore.kernel.org) /
 It lists a mailing list's patches, colors them by merge/review status, and opens
 whole threads in closable, scrollable tabs.
 
+> [!WARNING]
+> This project was heavily AI-driven. Most of the code was written by large
+> language models with human guidance. Review with appropriate skepticism.
+
 ## Features
 
 - Browse the patches (thread roots) of a configured mailing list, newest first.
