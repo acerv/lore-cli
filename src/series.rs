@@ -123,7 +123,7 @@ pub fn group<'a>(items: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Gro
 }
 
 /// Parse the version (`vN`, default 1) and a normalized title key of a subject.
-fn version_of(subject: &str) -> (u32, String) {
+pub(crate) fn version_of(subject: &str) -> (u32, String) {
     let mut rest = subject.trim();
     let mut version = 1;
     let mut found = false;

@@ -19,4 +19,10 @@ pub enum AppEvent {
         message_id: String,
         result: Result<Vec<Email>, String>,
     },
+    /// An `A` (apply-with-b4) run finished; carries b4's combined output on
+    /// success or an error message on failure.
+    Applied {
+        message_id: String,
+        result: Result<String, String>,
+    },
 }

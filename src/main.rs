@@ -134,6 +134,7 @@ async fn run(
             AppEvent::ThreadLoaded { message_id, result } => {
                 app.on_thread_loaded(message_id, result)
             }
+            AppEvent::Applied { message_id, result } => app.on_applied(message_id, result),
         }
         if app.should_quit {
             break;

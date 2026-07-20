@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,6 +64,15 @@ impl ThreadTab {
     }
 }
 
+/// A resolved apply request: the latest loaded version of the selected series.
+#[derive(Debug, Clone)]
+pub struct ApplyTarget {
+    /// Message-id of the latest version's head (cover or standalone).
+    pub message_id: String,
+    /// Subject shown in the confirmation popup.
+    pub subject: String,
+}
+
 /// One visible line in the patch list (a flattened version tree).
 #[derive(Debug, Clone, Copy)]
 pub struct Row {
@@ -120,6 +130,12 @@ pub struct App {
     pub marked: HashSet<String>,
     /// On-disk store for `marked`, scoped to this server + project.
     marks_store: Cache,
+    /// Pending `A` (apply) confirmation, if the user pressed `A`.
+    pub apply_confirm: Option<ApplyTarget>,
+    /// Whether a b4 apply is currently running (drives a spinner).
+    pub apply_in_progress: bool,
+    /// Result of the last apply, shown in a dismissible popup.
+    pub apply_result: Option<Result<String, String>>,
 }
 
 impl App {
@@ -157,6 +173,9 @@ impl App {
             latest_only: false,
             marked,
             marks_store,
+            apply_confirm: None,
+            apply_in_progress: false,
+            apply_result: None,
         }
     }
 
@@ -178,6 +197,93 @@ impl App {
         if self.latest_only {
             self.rebuild_view();
         }
+    }
+
+    // ----- apply with b4 ---------------------------------------------------
+
+    /// Resolve the selected series to the latest loaded version so `b4` applies
+    /// the newest revision (and its `Link:` points at the latest patch/set).
+    fn latest_series_target(&self, row: Row) -> Option<ApplyTarget> {
+        let head = self.groups.get(row.group).map(|g| g.head)?;
+        let (_, key) = series::version_of(&self.patches.get(head)?.subject);
+
+        // Among all group heads sharing the same title, pick the highest version.
+        let best = self
+            .groups
+            .iter()
+            .filter_map(|g| {
+                let patch = self.patches.get(g.head)?;
+                let (version, k) = series::version_of(&patch.subject);
+                (k == key).then_some((version, patch))
+            })
+            .max_by_key(|(version, _)| *version)
+            .map(|(_, patch)| patch)
+            .unwrap_or(self.patches.get(head)?);
+
+        Some(ApplyTarget {
+            message_id: best.message_id.clone(),
+            subject: best.subject.clone(),
+        })
+    }
+
+    /// The canonical lore URL for a message-id, handed to `b4`.
+    fn apply_lore_url(&self, message_id: &str) -> String {
+        format!(
+            "{}/{}/{}/",
+            self.config.lore.server, self.config.lore.project, message_id
+        )
+    }
+
+    /// Open the apply confirmation for the selected series (`A`).
+    fn request_apply(&mut self) {
+        if self.apply_in_progress {
+            return;
+        }
+        if let Some(row) = self.selected_row() {
+            self.apply_confirm = self.latest_series_target(row);
+        }
+    }
+
+    /// Launch `b4 shazam` in the current directory to apply the confirmed series.
+    fn start_apply(&mut self) {
+        let Some(target) = self.apply_confirm.take() else {
+            return;
+        };
+        self.apply_in_progress = true;
+        let url = self.apply_lore_url(&target.message_id);
+        let message_id = target.message_id;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            // `-n` keeps b4 non-interactive (no prompts fighting the TUI for
+            // stdin); `-l` adds a Link: trailer with the lore URL to every patch.
+            let output = tokio::process::Command::new("b4")
+                .args(["-n", "shazam", "-l", &url])
+                .stdin(Stdio::null())
+                .output()
+                .await;
+            let result = match output {
+                Ok(out) => {
+                    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    text.push_str(&String::from_utf8_lossy(&out.stderr));
+                    if out.status.success() {
+                        Ok(text)
+                    } else {
+                        Err(if text.trim().is_empty() {
+                            format!("b4 exited with {}", out.status)
+                        } else {
+                            text
+                        })
+                    }
+                }
+                Err(e) => Err(format!("failed to run b4: {e}")),
+            };
+            let _ = tx.send(AppEvent::Applied { message_id, result });
+        });
+    }
+
+    pub fn on_applied(&mut self, _message_id: String, result: Result<String, String>) {
+        self.apply_in_progress = false;
+        self.apply_result = Some(result);
     }
 
     /// Kick off the initial patch-list fetch in the background.
@@ -649,6 +755,20 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+        // A result popup captures the next key to dismiss it.
+        if self.apply_result.is_some() {
+            self.apply_result = None;
+            return;
+        }
+        // The apply confirmation captures keys: y confirms, anything else cancels.
+        if self.apply_confirm.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.start_apply(),
+                _ => self.apply_confirm = None,
+            }
+            return;
+        }
+
         // Tab switching works from any view.
         if ctrl {
             match key.code {
@@ -703,6 +823,7 @@ impl App {
             KeyCode::PageUp => self.select_by(-10),
             KeyCode::Char(' ') => self.toggle_selected_group(),
             KeyCode::Char('m') => self.toggle_selected_mark(),
+            KeyCode::Char('A') => self.request_apply(),
             KeyCode::Char('R') => self.refresh(),
             KeyCode::Char('N') => self.toggle_latest_only(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
@@ -1154,6 +1275,68 @@ mod tests {
         assert!(app.latest_only);
         assert_eq!(app.rows.len(), 1);
         assert_eq!(app.patches[app.rows[0].patch].message_id, "b@x");
+    }
+
+    #[test]
+    fn apply_targets_latest_loaded_version() {
+        let mut app = test_app(0);
+        // Two standalone versions of the same patch (newest first) + unrelated.
+        app.patches = vec![
+            patch("[PATCH v2] mm: fix", "v2@x"),
+            patch("[PATCH] mm: fix", "v1@x"),
+            patch("[PATCH] net: other", "n@x"),
+        ];
+        app.rebuild_view();
+
+        // Select the older v1 row and request apply.
+        let v1_row = app
+            .rows
+            .iter()
+            .position(|r| app.patches[r.patch].message_id == "v1@x")
+            .unwrap();
+        app.list_state.select(Some(v1_row));
+
+        let target = app.latest_series_target(app.selected_row().unwrap()).unwrap();
+        assert_eq!(target.message_id, "v2@x", "should resolve to the latest version");
+
+        // The lore URL is built from the resolved (latest) message-id.
+        assert_eq!(
+            app.apply_lore_url(&target.message_id),
+            "https://lore.kernel.org/test/v2@x/"
+        );
+    }
+
+    #[test]
+    fn apply_confirm_opens_and_cancels() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = test_app(0);
+        app.patches = vec![patch("[PATCH] a", "a@x")];
+        app.rebuild_view();
+        app.list_state.select(Some(0));
+
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        // 'A' opens the confirmation.
+        app.handle_crossterm(key('A'));
+        assert!(app.apply_confirm.is_some());
+
+        // A non-'y' key cancels without applying.
+        app.handle_crossterm(key('x'));
+        assert!(app.apply_confirm.is_none());
+        assert!(!app.apply_in_progress);
+    }
+
+    #[test]
+    fn apply_result_dismissed_by_any_key() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = test_app(1);
+        app.apply_result = Some(Ok("applied 1 patch".into()));
+
+        let key = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.handle_crossterm(key);
+        assert!(app.apply_result.is_none());
     }
 
     #[test]

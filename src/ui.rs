@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, Row, ThreadTab};
@@ -32,6 +32,74 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_statusbar(frame, app, areas[3]);
+    render_apply_popup(frame, app);
+}
+
+/// Draw the apply (b4) confirmation / progress / result popup, if any.
+fn render_apply_popup(frame: &mut Frame, app: &App) {
+    let (title, body, border) = if app.apply_in_progress {
+        let spin = SPINNER[(app.tick % 4) as usize];
+        (
+            format!(" applying {spin} "),
+            "Running b4 shazam…".to_string(),
+            Color::Yellow,
+        )
+    } else if let Some(target) = &app.apply_confirm {
+        (
+            " apply series ".to_string(),
+            format!(
+                "Apply latest version with b4 shazam?\n\n{}\n\n[y] apply    [any] cancel",
+                sanitize(&target.subject)
+            ),
+            Color::Cyan,
+        )
+    } else if let Some(result) = &app.apply_result {
+        match result {
+            Ok(out) => (" applied ".to_string(), popup_tail(out), Color::Green),
+            Err(err) => (" apply failed ".to_string(), popup_tail(err), Color::Red),
+        }
+    } else {
+        return;
+    };
+
+    let area = centered_rect(70, 60, frame.area());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(title);
+    let dismiss = if app.apply_result.is_some() {
+        "\n\n(press any key to dismiss)"
+    } else {
+        ""
+    };
+    let para = Paragraph::new(format!("{body}{dismiss}"))
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(para, area);
+}
+
+/// Keep the last lines of long b4 output so the popup shows the outcome.
+fn popup_tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(16);
+    lines[start..].join("\n")
+}
+
+/// A centered rectangle sized as a percentage of `area`.
+fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - pct_y) / 2),
+        Constraint::Percentage(pct_y),
+        Constraint::Percentage((100 - pct_y) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - pct_x) / 2),
+        Constraint::Percentage(pct_x),
+        Constraint::Percentage((100 - pct_x) / 2),
+    ])
+    .split(vertical[1])[1]
 }
 
 fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
@@ -361,7 +429,7 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             let mut spans = vec![
                 Span::styled(
-                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  m mark  N latest  q quit",
+                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  m mark  A apply  N latest  q quit",
                     dim(),
                 ),
                 Span::styled("  |  ", dim()),
@@ -634,6 +702,35 @@ mod tests {
             "marked row should be struck through"
         );
         assert!(row_has_fg(buffer, 3, Color::DarkGray), "marked row should be grey");
+    }
+
+    #[test]
+    fn apply_confirm_popup_is_shown() {
+        let config = Config {
+            lore: LoreConfig {
+                server: "https://lore.kernel.org".into(),
+                project: "test".into(),
+            },
+            ui: UiConfig::default(),
+            status: StatusConfig::default(),
+        };
+        let client = LoreClient::new(&config.lore).unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut app = App::new(config, client, tx);
+        app.marked.clear();
+        app.loading_patches = false;
+        app.apply_confirm = Some(crate::app::ApplyTarget {
+            message_id: "v2@x".into(),
+            subject: "[PATCH v2] mm: fix".into(),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+
+        assert!(text.contains("apply series"), "popup title should appear");
+        assert!(text.contains("b4 shazam"), "popup should mention b4 shazam");
+        assert!(text.contains("[y] apply"), "popup should show the confirm hint");
     }
 
     #[test]
