@@ -20,5 +20,6 @@ merged_markers = [
 	"Merged, thanks",
 	"Applied, thanks",
 	"merged.",
-	"patchset applied"
+	"patchset applied",
+	"thanks, merged",
 ]
