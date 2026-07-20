@@ -61,10 +61,20 @@ merged_markers = ["Merged, thanks", "Applied, thanks"]
 Only the `[lore]` section is required; `[ui]` and `[status]` fall back to the
 defaults shown above.
 
+By default the config is read from the platform config directory:
+
+- Linux: `~/.config/lore-cli/config.toml`
+- macOS: `~/Library/Application Support/lore-cli/config.toml`
+- Windows: `%APPDATA%\lore-cli\config.toml`
+
+If no file exists there, a `config.toml` in the current directory is used as a
+fallback (handy when running from a repo checkout). Use `--config PATH` to point
+at any other file.
+
 ## Usage
 
 ```sh
-cargo run --release                       # uses ./config.toml
+cargo run --release                       # uses ~/.config/lore-cli/config.toml (or ./config.toml)
 cargo run --release -- --config PATH      # use a specific config file
 ./target/release/lore-cli --config PATH
 ```

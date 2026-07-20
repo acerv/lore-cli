@@ -26,13 +26,13 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args> {
-    let mut config_path = PathBuf::from("config.toml");
+    let mut config_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" | "-c" => {
                 let path = args.next().context("--config requires a path argument")?;
-                config_path = PathBuf::from(path);
+                config_path = Some(PathBuf::from(path));
             }
             "--help" | "-h" => {
                 println!("Usage: lore-cli [--config <path>]");
@@ -41,7 +41,34 @@ fn parse_args() -> Result<Args> {
             other => bail!("unknown argument: {other}"),
         }
     }
+    let config_path = match config_path {
+        Some(path) => path,
+        None => default_config_path()?,
+    };
     Ok(Args { config_path })
+}
+
+/// Resolve the default config location.
+///
+/// Prefers the platform config directory (e.g. `~/.config/lore-cli/config.toml`
+/// on Linux), matching where the cache lives. Falls back to `./config.toml` in
+/// the current directory if that file exists but the config-dir one does not,
+/// preserving the previous behaviour for in-repo runs.
+fn default_config_path() -> Result<PathBuf> {
+    let cwd_config = PathBuf::from("config.toml");
+    if let Some(dirs) = directories::ProjectDirs::from("", "", "lore-cli") {
+        let config = dirs.config_dir().join("config.toml");
+        if config.exists() {
+            return Ok(config);
+        }
+        // Fall back to a local config.toml when present (e.g. running from the
+        // repo checkout), otherwise point users at the config dir location.
+        if cwd_config.exists() {
+            return Ok(cwd_config);
+        }
+        return Ok(config);
+    }
+    Ok(cwd_config)
 }
 
 /// Spawn a blocking thread that forwards terminal input over the channel.
