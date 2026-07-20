@@ -134,6 +134,8 @@ pub struct App {
     pub apply_confirm: Option<ApplyTarget>,
     /// Whether a b4 apply is currently running (drives a spinner).
     pub apply_in_progress: bool,
+    /// Handle to the running b4 task, so the apply can be cancelled.
+    apply_task: Option<tokio::task::JoinHandle<()>>,
     /// Result of the last apply, shown in a dismissible popup.
     pub apply_result: Option<Result<String, String>>,
 }
@@ -175,6 +177,7 @@ impl App {
             marks_store,
             apply_confirm: None,
             apply_in_progress: false,
+            apply_task: None,
             apply_result: None,
         }
     }
@@ -253,12 +256,14 @@ impl App {
         let url = self.apply_lore_url(&target.message_id);
         let message_id = target.message_id;
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             // `-n` keeps b4 non-interactive (no prompts fighting the TUI for
             // stdin); `-l` adds a Link: trailer with the lore URL to every patch.
+            // `kill_on_drop` ensures cancelling the task also kills b4.
             let output = tokio::process::Command::new("b4")
                 .args(["-n", "shazam", "-l", &url])
                 .stdin(Stdio::null())
+                .kill_on_drop(true)
                 .output()
                 .await;
             let result = match output {
@@ -275,13 +280,40 @@ impl App {
                         })
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err("b4 not found — install it and ensure it is on your PATH \
+                         (see https://b4.docs.kernel.org)"
+                        .to_string())
+                }
                 Err(e) => Err(format!("failed to run b4: {e}")),
             };
             let _ = tx.send(AppEvent::Applied { message_id, result });
         });
+        self.apply_task = Some(handle);
+    }
+
+    /// Abort a running b4 apply (Esc/c while applying). `kill_on_drop` on the
+    /// command means aborting the task also terminates the b4 process.
+    fn cancel_apply(&mut self) {
+        if let Some(handle) = self.apply_task.take() {
+            handle.abort();
+        }
+        if self.apply_in_progress {
+            self.apply_in_progress = false;
+            self.apply_result = Some(Err(
+                "apply cancelled — b4 was interrupted; if it had started applying, \
+                 run `git am --abort` in your tree"
+                    .to_string(),
+            ));
+        }
     }
 
     pub fn on_applied(&mut self, _message_id: String, result: Result<String, String>) {
+        self.apply_task = None;
+        // Ignore a late result that arrives after the user cancelled.
+        if !self.apply_in_progress {
+            return;
+        }
         self.apply_in_progress = false;
         self.apply_result = Some(result);
     }
@@ -758,6 +790,13 @@ impl App {
         // A result popup captures the next key to dismiss it.
         if self.apply_result.is_some() {
             self.apply_result = None;
+            return;
+        }
+        // While applying, keys are captured; Esc/c cancels, others are ignored.
+        if self.apply_in_progress {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('c')) {
+                self.cancel_apply();
+            }
             return;
         }
         // The apply confirmation captures keys: y confirms, anything else cancels.
@@ -1325,6 +1364,37 @@ mod tests {
         app.handle_crossterm(key('x'));
         assert!(app.apply_confirm.is_none());
         assert!(!app.apply_in_progress);
+    }
+
+    #[tokio::test]
+    async fn cancel_apply_stops_progress_and_ignores_late_result() {
+        let mut app = test_app(1);
+        // Simulate a running apply with a real (long-sleeping) task handle.
+        app.apply_in_progress = true;
+        app.apply_task = Some(tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }));
+
+        app.cancel_apply();
+        assert!(!app.apply_in_progress, "cancel must stop the spinner");
+        assert!(matches!(app.apply_result, Some(Err(_))), "cancel is surfaced");
+        assert!(app.apply_task.is_none(), "task handle is dropped");
+
+        // A late Applied event (task result arriving after cancel) is ignored.
+        app.on_applied("a@x".into(), Ok("applied".into()));
+        assert!(
+            matches!(app.apply_result, Some(Err(_))),
+            "late success must not overwrite the cancel message"
+        );
+    }
+
+    #[test]
+    fn on_applied_failure_clears_progress_and_shows_error() {
+        let mut app = test_app(1);
+        app.apply_in_progress = true;
+        app.on_applied("a@x".into(), Err("b4 not found".into()));
+        assert!(!app.apply_in_progress, "spinner must stop after a failure");
+        assert!(matches!(app.apply_result, Some(Err(_))), "error is surfaced");
     }
 
     #[test]

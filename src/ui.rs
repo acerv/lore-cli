@@ -41,7 +41,7 @@ fn render_apply_popup(frame: &mut Frame, app: &App) {
         let spin = SPINNER[(app.tick % 4) as usize];
         (
             format!(" applying {spin} "),
-            "Running b4 shazam…".to_string(),
+            "Running b4 shazam…\n\n[Esc] cancel".to_string(),
             Color::Yellow,
         )
     } else if let Some(target) = &app.apply_confirm {
