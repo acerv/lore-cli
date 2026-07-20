@@ -9,6 +9,7 @@ use ratatui::widgets::ListState;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
 
+use crate::cache::Cache;
 use crate::config::Config;
 use crate::event::AppEvent;
 use crate::lore::LoreClient;
@@ -115,6 +116,10 @@ pub struct App {
     pub search_active: bool,
     /// Toggle: show only the latest version of each patch (hide superseded children).
     pub latest_only: bool,
+    /// Message-ids the user marked as viewed / not relevant (persisted).
+    pub marked: HashSet<String>,
+    /// On-disk store for `marked`, scoped to this server + project.
+    marks_store: Cache,
 }
 
 impl App {
@@ -122,6 +127,9 @@ impl App {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         let status_sem = Arc::new(Semaphore::new(config.ui.status_concurrency.max(1)));
+        // Persisted marks live alongside the thread cache, keyed by host+project.
+        let marks_store = Cache::new(&config.lore.server, &config.lore.project);
+        let marked = marks_store.load_marks();
         Self {
             config,
             client,
@@ -147,6 +155,28 @@ impl App {
             search: None,
             search_active: false,
             latest_only: false,
+            marked,
+            marks_store,
+        }
+    }
+
+    /// Toggle the "viewed / not relevant" mark on the selected patch and persist
+    /// it, so the greyed-out state survives across restarts.
+    fn toggle_selected_mark(&mut self) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let Some(patch) = self.patches.get(row.patch) else {
+            return;
+        };
+        let id = patch.message_id.clone();
+        if !self.marked.remove(&id) {
+            self.marked.insert(id);
+        }
+        self.marks_store.save_marks(&self.marked);
+        // In latest-only mode a freshly-marked patch should drop out of the list.
+        if self.latest_only {
+            self.rebuild_view();
         }
     }
 
@@ -426,7 +456,7 @@ impl App {
     }
 
     /// Whether the patch at `index` should be hidden in latest-only mode: an
-    /// older version (superseded), or already reviewed/merged.
+    /// older version (superseded), already reviewed/merged, or user-marked.
     fn is_hidden_by_latest(&self, index: usize) -> bool {
         if !self.latest_only {
             return false;
@@ -436,6 +466,13 @@ impl App {
             .get(index)
             .copied()
             .unwrap_or(false)
+        {
+            return true;
+        }
+        if self
+            .patches
+            .get(index)
+            .is_some_and(|p| self.marked.contains(&p.message_id))
         {
             return true;
         }
@@ -665,7 +702,7 @@ impl App {
             }
             KeyCode::PageUp => self.select_by(-10),
             KeyCode::Char(' ') => self.toggle_selected_group(),
-            KeyCode::Char('m') => self.load_more(),
+            KeyCode::Char('m') => self.toggle_selected_mark(),
             KeyCode::Char('R') => self.refresh(),
             KeyCode::Char('N') => self.toggle_latest_only(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_selected_thread(),
@@ -760,6 +797,9 @@ mod tests {
         let client = LoreClient::new(&config.lore).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
+        // Isolate tests from any persisted marks on disk.
+        app.marks_store = Cache::disabled();
+        app.marked.clear();
         app.loading_patches = false;
         app.patches = (0..patch_count)
             .map(|i| PatchEntry {
@@ -1085,6 +1125,35 @@ mod tests {
         assert!(!app.search_active);
         assert!(app.search.is_none());
         assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn mark_toggles_and_hides_in_latest_only() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = test_app(0);
+        app.patches = vec![patch("[PATCH] a", "a@x"), patch("[PATCH] b", "b@x")];
+        app.patches[0].status = PatchStatus::Normal;
+        app.patches[1].status = PatchStatus::Normal;
+        app.rebuild_view();
+        app.list_state.select(Some(0));
+
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        // Press 'm' to mark the first patch.
+        app.handle_crossterm(key('m'));
+        assert!(app.marked.contains("a@x"));
+
+        // Press 'm' again to unmark it.
+        app.handle_crossterm(key('m'));
+        assert!(!app.marked.contains("a@x"));
+
+        // Re-mark, then latest-only should hide it.
+        app.handle_crossterm(key('m'));
+        app.handle_crossterm(key('N'));
+        assert!(app.latest_only);
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.patches[app.rows[0].patch].message_id, "b@x");
     }
 
     #[test]

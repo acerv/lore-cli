@@ -76,8 +76,10 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .rows
         .iter()
         .map(|row| {
+            let patch = &app.patches[row.patch];
             let superseded = app.superseded.get(row.patch).copied().unwrap_or(false);
-            ListItem::new(tree_row(&app.patches[row.patch], row, superseded, width))
+            let marked = app.marked.contains(&patch.message_id);
+            ListItem::new(tree_row(patch, row, superseded, marked, width))
         })
         .collect();
 
@@ -92,18 +94,19 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-/// Style for a patch subject: merged is green and struck through (done); a
+/// Style for a patch subject: a user-marked (viewed / not relevant) patch is
+/// greyed and struck through; merged is green and struck through (done); a
 /// superseded patch is greyed and struck through; otherwise reviewed (yellow),
 /// the latest still needing review (default white), or still-probing (grey).
-fn status_style(status: PatchStatus, superseded: bool) -> Style {
+fn status_style(status: PatchStatus, superseded: bool, marked: bool) -> Style {
+    if marked || superseded {
+        return Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::CROSSED_OUT);
+    }
     if status == PatchStatus::Merged {
         return Style::default()
             .fg(Color::Green)
-            .add_modifier(Modifier::CROSSED_OUT);
-    }
-    if superseded {
-        return Style::default()
-            .fg(Color::DarkGray)
             .add_modifier(Modifier::CROSSED_OUT);
     }
     match status {
@@ -119,11 +122,17 @@ fn status_style(status: PatchStatus, superseded: bool) -> Style {
 /// A patch-set head (a cover letter) shows the number of patches (`▸N`
 /// collapsed / `▾N` expanded) in red at the very start; members are indented.
 /// Merge and review state is conveyed by the row color.
-fn tree_row(patch: &PatchEntry, row: &Row, superseded: bool, width: usize) -> Line<'static> {
+fn tree_row(
+    patch: &PatchEntry,
+    row: &Row,
+    superseded: bool,
+    marked: bool,
+    width: usize,
+) -> Line<'static> {
     const AUTHOR_W: usize = 22;
     const DATE_W: usize = 10;
 
-    let subject_style = status_style(patch.status, superseded);
+    let subject_style = status_style(patch.status, superseded, marked);
     let date = patch
         .updated
         .map(|d| d.format("%Y-%m-%d").to_string())
@@ -352,7 +361,7 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             let mut spans = vec![
                 Span::styled(
-                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  N latest  q quit",
+                    " ↑/↓ move  Enter open  / search  R refresh  Space fold  m mark  N latest  q quit",
                     dim(),
                 ),
                 Span::styled("  |  ", dim()),
@@ -470,6 +479,7 @@ mod tests {
         let client = LoreClient::new(&config.lore).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
+        app.marked.clear(); // isolate from any persisted marks on disk
         app.loading_patches = false;
         app.patches = statuses
             .iter()
@@ -547,6 +557,7 @@ mod tests {
         let client = LoreClient::new(&config.lore).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
+        app.marked.clear(); // isolate from any persisted marks on disk
         app.loading_patches = false;
         let mk = |s: &str, id: &str| PatchEntry {
             subject: s.into(),
@@ -576,6 +587,53 @@ mod tests {
             row_has_modifier(buffer, 3, Modifier::CROSSED_OUT),
             "superseded row should be struck through"
         );
+    }
+
+    #[test]
+    fn marked_row_is_struck_grey() {
+        let config = Config {
+            lore: LoreConfig {
+                server: "https://lore.kernel.org".into(),
+                project: "test".into(),
+            },
+            ui: UiConfig::default(),
+            status: StatusConfig::default(),
+        };
+        let client = LoreClient::new(&config.lore).unwrap();
+        let (tx, _rx) = unbounded_channel();
+        let mut app = App::new(config, client, tx);
+        app.marked.clear(); // isolate from any persisted marks on disk
+        app.loading_patches = false;
+        let mk = |s: &str, id: &str| PatchEntry {
+            subject: s.into(),
+            author_name: "Dev".into(),
+            author_email: "d@x".into(),
+            message_id: id.into(),
+            updated: None,
+            status: PatchStatus::Normal,
+        };
+        app.patches = vec![
+            mk("[PATCH] keep me", "keep@x"),
+            mk("[PATCH] not relevant", "mark@x"),
+        ];
+        app.rebuild_view();
+        app.marked.insert("mark@x".into());
+        app.list_state.select(None);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // y=2 unmarked (plain); y=3 marked (grey + strikethrough).
+        assert!(
+            !row_has_modifier(buffer, 2, Modifier::CROSSED_OUT),
+            "unmarked row should not be struck through"
+        );
+        assert!(
+            row_has_modifier(buffer, 3, Modifier::CROSSED_OUT),
+            "marked row should be struck through"
+        );
+        assert!(row_has_fg(buffer, 3, Color::DarkGray), "marked row should be grey");
     }
 
     #[test]
@@ -661,6 +719,7 @@ mod tests {
         let client = LoreClient::new(&config.lore).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
+        app.marked.clear(); // isolate from any persisted marks on disk
         app.loading_patches = false;
         let mk = |subject: &str, id: &str| PatchEntry {
             subject: subject.into(),
