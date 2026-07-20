@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = std::iter::once(format!(" {} ", app.config.lore.project))
-        .chain(app.tabs.iter().map(|t| format!(" {} ", fit(&t.subject, 20))))
+        .chain(app.tabs.iter().map(|t| format!(" {} ", fit(&t.subject, 40))))
         .map(Line::from)
         .collect();
 
