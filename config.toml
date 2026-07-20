@@ -13,13 +13,17 @@ page_size = 200
 status_concurrency = 6
 
 [status]
-# Case-insensitive texts that mark a patch as merged (shown green). Maintainers
-# phrase this differently per subsystem — list every phrase that applies. A
-# single string also works: merged_markers = "Merged, thanks".
+# Case-insensitive regular expressions that mark a patch as merged (shown
+# green). Each entry is matched against every non-quoted line of the thread.
+# Maintainers phrase this differently per subsystem — list every pattern that
+# applies. A single string also works: merged_markers = "^applied".
 merged_markers = [
-	"Merged, thanks",
-	"Applied, thanks",
-	"merged.",
-	"patchset applied",
-	"thanks, merged",
+	# Line begins with the action verb, followed by "thanks", a target tree
+	# ("to <tree>"), or end-of-statement — e.g. "Applied, thanks",
+	# "Merged.", "Pushed to for-next".
+	"^\\s*(applied|merged|pushed)(,?\\s+thanks|\\s+to\\s+\\S+|[.!]|\\s*$)",
+	# "thanks, applied" / "thanks merged".
+	"^\\s*thanks,?\\s+(applied|merged|pushed)\\b",
+	# "patchset applied", "series merged" as a line-leading statement.
+	"^\\s*(patch(set|es)?|series)\\s+(applied|merged)(,?\\s+thanks|\\s+to\\s+\\S+|[.!]?\\s*$)",
 ]
