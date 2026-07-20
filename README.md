@@ -37,8 +37,6 @@ Requires a recent stable Rust toolchain.
 
 ## Configuration
 
-Copy `config.example.toml` to `config.toml` and adjust it:
-
 ```toml
 [lore]
 # Base URL of the lore / public-inbox server.
@@ -71,30 +69,30 @@ cargo run --release -- --config PATH      # use a specific config file
 
 Patch list (tab 0):
 
-| Key                       | Action                          |
-| ------------------------- | ------------------------------- |
-| Up / Down (k / j)         | move selection                  |
-| Home / End (g / G)        | first / last                    |
-| PageUp / PageDown         | jump 10                         |
-| Ctrl+d / Ctrl+u           | half-page down / up             |
-| Enter / → / l             | open the selected thread        |
-| /                         | live search (Esc clears)        |
-| R                         | refresh (check for new patches) |
-| Space                     | expand / collapse a patch-set   |
-| m                         | load more patches (auto at end) |
-| Ctrl+n / Ctrl+p           | next / previous tab             |
-| q / Esc                   | quit                            |
+| Key                | Action                          |
+| ------------------ | ------------------------------- |
+| Up / Down (k / j)  | move selection                  |
+| Home / End (g / G) | first / last                    |
+| PageUp / PageDown  | jump 10                         |
+| Ctrl+d / Ctrl+u    | half-page down / up             |
+| Enter / → / l      | open the selected thread        |
+| /                  | live search (Esc clears)        |
+| R                  | refresh (check for new patches) |
+| Space              | expand / collapse a patch-set   |
+| m                  | load more patches (auto at end) |
+| Ctrl+n / Ctrl+p    | next / previous tab             |
+| q / Esc            | quit                            |
 
 Thread tab:
 
-| Key                       | Action                          |
-| ------------------------- | ------------------------------- |
-| Up / Down (k / j)         | scroll one line                 |
-| Ctrl+d / Ctrl+u           | fast scroll (half page)         |
-| PageDown / PageUp / Space | scroll a page                   |
-| Home / End (g / G)        | top / bottom                    |
-| Ctrl+n / Ctrl+p           | next / previous tab             |
-| q / Esc                   | close the tab                   |
+| Key                       | Action                  |
+| ------------------------- | ----------------------- |
+| Up / Down (k / j)         | scroll one line         |
+| Ctrl+d / Ctrl+u           | fast scroll (half page) |
+| PageDown / PageUp / Space | scroll a page           |
+| Home / End (g / G)        | top / bottom            |
+| Ctrl+n / Ctrl+p           | next / previous tab     |
+| q / Esc                   | close the tab           |
 
 ## How it works
 
