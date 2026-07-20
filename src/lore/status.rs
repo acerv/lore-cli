@@ -1,13 +1,17 @@
 use crate::model::{Email, PatchStatus};
+use regex::{Regex, RegexBuilder};
 
 /// Determine a patch's status from the emails of its thread.
 ///
-/// A thread reply containing `merged_marker` wins (green); otherwise a
+/// A thread reply matching any `merged_markers` regex wins (green); otherwise a
 /// `Reviewed-by:` trailer anywhere marks it reviewed (yellow); otherwise it is
 /// normal. Quoted lines (starting with `>`) are ignored to avoid matching text
 /// someone merely quoted back.
+///
+/// Each marker is a case-insensitive regular expression matched against every
+/// non-quoted line. Invalid patterns are skipped (they never match).
 pub fn compute_status(emails: &[Email], merged_markers: &[String]) -> PatchStatus {
-    let markers: Vec<String> = merged_markers.iter().map(|m| m.to_ascii_lowercase()).collect();
+    let markers = compile_markers(merged_markers);
     let mut reviewed = false;
     for email in emails {
         if body_has_merged(&email.body, &markers) {
@@ -24,15 +28,23 @@ pub fn compute_status(emails: &[Email], merged_markers: &[String]) -> PatchStatu
     }
 }
 
+/// Compile each marker string into a case-insensitive regex, skipping any that
+/// fail to parse so a bad pattern can't break status detection.
+fn compile_markers(merged_markers: &[String]) -> Vec<Regex> {
+    merged_markers
+        .iter()
+        .filter_map(|m| RegexBuilder::new(m).case_insensitive(true).build().ok())
+        .collect()
+}
+
 fn is_quoted(line: &str) -> bool {
     line.trim_start().starts_with('>')
 }
 
-fn body_has_merged(body: &str, lowercase_markers: &[String]) -> bool {
-    body.lines().filter(|line| !is_quoted(line)).any(|line| {
-        let lower = line.to_ascii_lowercase();
-        lowercase_markers.iter().any(|m| lower.contains(m.as_str()))
-    })
+fn body_has_merged(body: &str, markers: &[Regex]) -> bool {
+    body.lines()
+        .filter(|line| !is_quoted(line))
+        .any(|line| markers.iter().any(|re| re.is_match(line)))
 }
 
 fn body_has_reviewed_by(body: &str) -> bool {
@@ -120,5 +132,33 @@ mod tests {
         let emails = vec![email("Applied, thanks!\n")];
         let markers = ["Merged, thanks".to_string(), "Applied, thanks".to_string()];
         assert_eq!(compute_status(&emails, &markers), PatchStatus::Merged);
+    }
+
+    #[test]
+    fn marker_is_treated_as_regex() {
+        let markers = [r"(applied|merged|pushed) to".to_string()];
+        assert_eq!(
+            compute_status(&[email("Pushed to for-next.\n")], &markers),
+            PatchStatus::Merged
+        );
+        assert_eq!(
+            compute_status(&[email("applied TO my-tree\n")], &markers),
+            PatchStatus::Merged
+        );
+        assert_eq!(
+            compute_status(&[email("I applied for a job.\n")], &markers),
+            PatchStatus::Normal
+        );
+    }
+
+    #[test]
+    fn invalid_regex_marker_is_skipped() {
+        // An unbalanced group is invalid; it should simply never match rather
+        // than break detection for a valid sibling marker.
+        let markers = ["(unclosed".to_string(), "Merged, thanks".to_string()];
+        assert_eq!(
+            compute_status(&[email("Merged, thanks!\n")], &markers),
+            PatchStatus::Merged
+        );
     }
 }

@@ -959,6 +959,7 @@ dependencies = [
  "flate2",
  "mailparse",
  "ratatui",
+ "regex",
  "reqwest",
  "serde",
  "tokio",

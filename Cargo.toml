@@ -10,6 +10,7 @@ directories = "6.0.0"
 feed-rs = "2.4.0"
 flate2 = "1.1.9"
 mailparse = "0.16.1"
+regex = "1.11.1"
 ratatui = "0.29"
 reqwest = "0.13.4"
 serde = { version = "1.0.228", features = ["derive"] }

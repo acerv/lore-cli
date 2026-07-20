@@ -51,9 +51,9 @@ fn default_status_concurrency() -> usize {
 /// How patch status is detected from a thread.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatusConfig {
-    /// Case-insensitive texts that mark a patch as merged (green). Subsystems
-    /// phrase this differently (e.g. "Applied, thanks"); accepts a single
-    /// string or a list.
+    /// Case-insensitive regular expressions that mark a patch as merged (green).
+    /// Subsystems phrase this differently (e.g. "Applied, thanks" or
+    /// "(applied|merged) to"); accepts a single string or a list.
     #[serde(
         default = "default_merged_markers",
         alias = "merged_marker",
