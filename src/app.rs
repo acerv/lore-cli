@@ -903,9 +903,13 @@ impl App {
     }
 
     fn clear_search(&mut self) {
+        // Remember the patch under the cursor so it stays selected once the
+        // filtered list expands back to the full view.
+        let keep = self.selected_patch_id();
         self.search = None;
         self.search_active = false;
-        self.apply_search();
+        self.rebuild_rows();
+        self.restore_selection(keep);
     }
 
     fn apply_search(&mut self) {
@@ -1285,6 +1289,33 @@ mod tests {
         assert!(!app.search_active);
         assert!(app.search.is_none());
         assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn esc_from_search_keeps_selected_patch() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(0);
+        app.patches = vec![
+            patch("[PATCH] mm: fix foo", "a@x"),
+            patch("[PATCH] net: bar", "b@x"),
+            patch("[PATCH] mm: other", "c@x"),
+        ];
+        app.rebuild_view();
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        // Search for "mm" -> two rows (a@x, c@x), then move to the second match.
+        app.handle_crossterm(key('/'));
+        app.handle_crossterm(key('m'));
+        app.handle_crossterm(key('m'));
+        assert_eq!(app.rows.len(), 2);
+        app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        let selected_id = app.selected_patch_id();
+        assert_eq!(selected_id.as_deref(), Some("c@x"));
+
+        // Esc restores the full list but keeps the same patch under the cursor.
+        app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(app.rows.len(), 3);
+        assert_eq!(app.selected_patch_id().as_deref(), Some("c@x"));
     }
 
     #[test]
