@@ -509,13 +509,31 @@ impl App {
             return;
         }
         let index = id
-            .and_then(|id| {
-                self.rows
-                    .iter()
-                    .position(|r| self.patches.get(r.patch).is_some_and(|p| p.message_id == id))
-            })
+            .and_then(|id| self.row_index_for_id(&id))
             .unwrap_or_else(|| self.list_state.selected().unwrap_or(0).min(self.rows.len() - 1));
         self.list_state.select(Some(index));
+    }
+
+    /// Find the visible row for a patch by message-id. If the patch itself is
+    /// not a visible row (e.g. a collapsed older version that only appears in
+    /// the flat search list), fall back to the head row of its group so the
+    /// selection lands on the same patch-set rather than a stale index.
+    fn row_index_for_id(&self, id: &str) -> Option<usize> {
+        // Exact row match first.
+        if let Some(pos) = self
+            .rows
+            .iter()
+            .position(|r| self.patches.get(r.patch).is_some_and(|p| p.message_id == id))
+        {
+            return Some(pos);
+        }
+        // Otherwise map the patch to its group and select that group's head row.
+        let patch_index = self.patches.iter().position(|p| p.message_id == id)?;
+        let group_index = self
+            .groups
+            .iter()
+            .position(|g| g.head == patch_index || g.children.contains(&patch_index))?;
+        self.rows.iter().position(|r| r.group == group_index && r.depth == 0)
     }
 
     fn selected_row(&self) -> Option<Row> {
@@ -910,6 +928,12 @@ impl App {
         self.search_active = false;
         self.rebuild_rows();
         self.restore_selection(keep);
+        // Scroll so the restored selection sits ~1/4 down the viewport rather
+        // than clinging to the top/bottom edge.
+        if let Some(selected) = self.list_state.selected() {
+            let quarter = (self.list_height / 4) as usize;
+            *self.list_state.offset_mut() = selected.saturating_sub(quarter);
+        }
     }
 
     fn apply_search(&mut self) {
@@ -1316,6 +1340,69 @@ mod tests {
         app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert_eq!(app.rows.len(), 3);
         assert_eq!(app.selected_patch_id().as_deref(), Some("c@x"));
+    }
+
+    #[test]
+    fn esc_from_search_places_selection_at_quarter_height() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(0);
+        app.list_height = 20; // quarter = 5
+        app.patches = (0..40)
+            .map(|i| patch(&format!("[PATCH] item {i}"), &format!("id{i}@x")))
+            .collect();
+        app.rebuild_view();
+
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        // Search for a subject deep in the list so it can be scrolled.
+        app.handle_crossterm(key('/'));
+        for c in "item 30".chars() {
+            app.handle_crossterm(key(c));
+        }
+        assert_eq!(app.selected_patch_id().as_deref(), Some("id30@x"));
+
+        app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        let selected = app.list_state.selected().unwrap();
+        assert_eq!(app.patches[app.rows[selected].patch].message_id, "id30@x");
+        // Selection sits a quarter of the viewport (5) below the top row.
+        assert_eq!(app.list_state.offset(), selected - 5);
+    }
+
+    #[test]
+    fn esc_from_search_on_collapsed_child_selects_group_head() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        // A cover-letter patch-set: parts are collapsed children in the normal
+        // view but appear as flat rows in a search. Selecting a child in the
+        // search list and pressing Esc must land on that set (its head), not on
+        // a stale search-relative index.
+        let mut app = test_app(0);
+        // Message-ids share a git-send-email series stem so they group as one
+        // patch-set (the middle `-<seq>-` is collapsed by `series_stem`).
+        app.patches = vec![
+            patch("[PATCH 0/2] feature xyz", "20240101-feat-0-abc@x"),
+            patch("[PATCH 1/2] feature xyz: part one", "20240101-feat-1-abc@x"),
+            patch("[PATCH 2/2] feature xyz: part two", "20240101-feat-2-abc@x"),
+        ];
+        app.rebuild_view();
+        // Collapsed by default: only the cover-letter head is a row.
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.selected_patch_id().as_deref(), Some("20240101-feat-0-abc@x"));
+
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        // Search "part two" -> the child is the only match and is selected.
+        app.handle_crossterm(key('/'));
+        for c in "part two".chars() {
+            app.handle_crossterm(key(c));
+        }
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.selected_patch_id().as_deref(), Some("20240101-feat-2-abc@x"));
+
+        // Esc: the child has no row of its own (group collapsed), so selection
+        // falls back to the head of its group rather than the old index.
+        app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.selected_patch_id().as_deref(), Some("20240101-feat-0-abc@x"));
     }
 
     #[test]
