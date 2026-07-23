@@ -527,7 +527,7 @@ fn fit(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::config::{Config, LoreConfig, StatusConfig, UiConfig};
+    use crate::config::{CacheConfig, Config, LoreConfig, StatusConfig, UiConfig};
     use crate::lore::LoreClient;
     use crate::model::PatchEntry;
     use ratatui::backend::TestBackend;
@@ -543,8 +543,9 @@ mod tests {
             },
             ui: UiConfig::default(),
             status: StatusConfig::default(),
+            cache: CacheConfig::default(),
         };
-        let client = LoreClient::new(&config.lore).unwrap();
+        let client = LoreClient::new(&config.lore, 0).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         app.marked.clear(); // isolate from any persisted marks on disk
@@ -621,8 +622,9 @@ mod tests {
             },
             ui: UiConfig::default(),
             status: StatusConfig::default(),
+            cache: CacheConfig::default(),
         };
-        let client = LoreClient::new(&config.lore).unwrap();
+        let client = LoreClient::new(&config.lore, 0).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         app.marked.clear(); // isolate from any persisted marks on disk
@@ -666,8 +668,9 @@ mod tests {
             },
             ui: UiConfig::default(),
             status: StatusConfig::default(),
+            cache: CacheConfig::default(),
         };
-        let client = LoreClient::new(&config.lore).unwrap();
+        let client = LoreClient::new(&config.lore, 0).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         app.marked.clear(); // isolate from any persisted marks on disk
@@ -713,8 +716,9 @@ mod tests {
             },
             ui: UiConfig::default(),
             status: StatusConfig::default(),
+            cache: CacheConfig::default(),
         };
-        let client = LoreClient::new(&config.lore).unwrap();
+        let client = LoreClient::new(&config.lore, 0).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         app.marked.clear();
@@ -812,8 +816,9 @@ mod tests {
             },
             ui: UiConfig::default(),
             status: StatusConfig::default(),
+            cache: CacheConfig::default(),
         };
-        let client = LoreClient::new(&config.lore).unwrap();
+        let client = LoreClient::new(&config.lore, 0).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         app.marked.clear(); // isolate from any persisted marks on disk

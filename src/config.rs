@@ -11,6 +11,8 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub status: StatusConfig,
+    #[serde(default)]
+    pub cache: CacheConfig,
 }
 
 /// Which lore/public-inbox server and project (mailing list) to browse.
@@ -72,6 +74,29 @@ impl Default for StatusConfig {
 
 fn default_merged_markers() -> Vec<String> {
     vec!["Merged, thanks".to_string()]
+}
+
+/// On-disk thread-cache tunables.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheConfig {
+    /// How long (seconds) a cached thread mbox is trusted before it is
+    /// re-fetched from the server. Mailing lists gain new patches/replies over
+    /// time, so an unbounded cache would keep serving a stale thread. `0`
+    /// disables expiry (cache forever).
+    #[serde(default = "default_max_age_secs")]
+    pub max_age_secs: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_age_secs: default_max_age_secs(),
+        }
+    }
+}
+
+fn default_max_age_secs() -> u64 {
+    900 // 15 minutes
 }
 
 /// Accept either a single string or a list of strings.
@@ -183,6 +208,20 @@ mod tests {
         // Backward-compatible singular key.
         let old: Config = toml::from_str(&format!("{base}merged_marker = \"Pushed\"\n")).unwrap();
         assert_eq!(old.status.merged_markers, vec!["Pushed".to_string()]);
+    }
+
+    #[test]
+    fn cache_max_age_defaults_and_overrides() {
+        let base = "[lore]\nserver = \"https://x\"\nproject = \"p\"\n";
+
+        // Default when the section is omitted.
+        let default: Config = toml::from_str(base).unwrap();
+        assert_eq!(default.cache.max_age_secs, 900);
+
+        // Explicit override, including 0 (cache forever).
+        let overridden: Config =
+            toml::from_str(&format!("{base}[cache]\nmax_age_secs = 0\n")).unwrap();
+        assert_eq!(overridden.cache.max_age_secs, 0);
     }
 
     #[test]

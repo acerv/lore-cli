@@ -12,6 +12,13 @@ page_size = 200
 # Number of threads fetched in parallel to determine merge/review status.
 status_concurrency = 6
 
+[cache]
+# How long (in seconds) a cached thread mbox is trusted before it is
+# re-fetched from the server. Mailing-list threads gain new patches and
+# replies over time, so an unbounded cache would keep showing a stale thread.
+# Set to 0 to cache forever (never re-fetch). Default: 900 (15 minutes).
+max_age_secs = 900
+
 [status]
 # Case-insensitive regular expressions that mark a patch as merged (shown
 # green). Each entry is matched against every non-quoted line of the thread.

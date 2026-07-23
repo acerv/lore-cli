@@ -28,7 +28,7 @@ pub struct LoreClient {
 }
 
 impl LoreClient {
-    pub fn new(config: &LoreConfig) -> Result<Self> {
+    pub fn new(config: &LoreConfig, cache_max_age_secs: u64) -> Result<Self> {
         let http = Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
@@ -39,7 +39,7 @@ impl LoreClient {
             http,
             server: config.server.clone(),
             project: config.project.clone(),
-            cache: Cache::new(&config.server, &config.project),
+            cache: Cache::new(&config.server, &config.project, cache_max_age_secs),
         })
     }
 
@@ -117,7 +117,7 @@ mod live_tests {
             server: "https://lore.kernel.org".into(),
             project: "amd-gfx".into(),
         };
-        let client = LoreClient::new(&cfg).unwrap();
+        let client = LoreClient::new(&cfg, 0).unwrap();
 
         let patches = client.fetch_patch_list(0).await.unwrap();
         assert!(!patches.is_empty(), "expected some patches");

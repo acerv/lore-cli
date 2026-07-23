@@ -99,7 +99,7 @@ fn spawn_ticker(tx: UnboundedSender<AppEvent>) {
 async fn main() -> Result<()> {
     let args = parse_args()?;
     let config = Config::load(&args.config_path)?;
-    let client = lore::LoreClient::new(&config.lore)?;
+    let client = lore::LoreClient::new(&config.lore, config.cache.max_age_secs)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut terminal = ratatui::init();

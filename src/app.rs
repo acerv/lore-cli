@@ -146,7 +146,8 @@ impl App {
         list_state.select(Some(0));
         let status_sem = Arc::new(Semaphore::new(config.ui.status_concurrency.max(1)));
         // Persisted marks live alongside the thread cache, keyed by host+project.
-        let marks_store = Cache::new(&config.lore.server, &config.lore.project);
+        // Marks never expire (TTL 0); they are read via load_marks, not get().
+        let marks_store = Cache::new(&config.lore.server, &config.lore.project, 0);
         let marked = marks_store.load_marks();
         Self {
             config,
@@ -969,7 +970,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LoreConfig, StatusConfig, UiConfig};
+    use crate::config::{CacheConfig, Config, LoreConfig, StatusConfig, UiConfig};
     use crate::model::PatchStatus;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -981,8 +982,9 @@ mod tests {
             },
             ui: UiConfig::default(),
             status: StatusConfig::default(),
+            cache: CacheConfig::default(),
         };
-        let client = LoreClient::new(&config.lore).unwrap();
+        let client = LoreClient::new(&config.lore, 0).unwrap();
         let (tx, _rx) = unbounded_channel();
         let mut app = App::new(config, client, tx);
         // Isolate tests from any persisted marks on disk.

@@ -52,14 +52,19 @@ project = "amd-gfx"
 page_size          = 200   # patches per page (200 = server maximum)
 status_concurrency = 6     # parallel thread fetches for status detection
 
+[cache]
+max_age_secs = 900         # re-fetch a cached thread after this many seconds
+                           # (0 = cache forever). Keeps threads up to date as
+                           # new patches/replies arrive on the list.
+
 [status]
 # Case-insensitive texts that mark a patch as merged (shown green). List every
 # phrase your subsystem uses; a single string also works.
 merged_markers = ["Merged, thanks", "Applied, thanks"]
 ```
 
-Only the `[lore]` section is required; `[ui]` and `[status]` fall back to the
-defaults shown above.
+Only the `[lore]` section is required; `[ui]`, `[cache]` and `[status]` fall
+back to the defaults shown above.
 
 By default the config is read from the platform config directory:
 
