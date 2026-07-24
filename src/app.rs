@@ -895,15 +895,17 @@ impl App {
         match key.code {
             KeyCode::Esc => self.clear_search(),
             KeyCode::Enter => self.search_active = false, // commit, keep the filter
-            KeyCode::Backspace => {
-                if let Some(query) = self.search.as_mut() {
-                    query.pop();
-                }
-                self.apply_search();
-            }
+            // Erase the last character. Terminals are inconsistent about how
+            // they report the backspace key: most send BS/DEL (parsed as
+            // KeyCode::Backspace), some send Ctrl-H, and a few report it as
+            // Delete. Accept all of them.
+            KeyCode::Backspace | KeyCode::Delete => self.search_backspace(),
+            KeyCode::Char('h') if ctrl => self.search_backspace(),
             KeyCode::Down => self.select_next(),
             KeyCode::Up => self.select_prev(),
-            KeyCode::Char(c) if !ctrl => {
+            // Ignore control characters (e.g. a stray DEL delivered as a Char)
+            // so they never get inserted into the query.
+            KeyCode::Char(c) if !ctrl && !c.is_control() => {
                 if let Some(query) = self.search.as_mut() {
                     query.push(c);
                 }
@@ -911,6 +913,14 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Remove the last character of the search query and refresh the results.
+    fn search_backspace(&mut self) {
+        if let Some(query) = self.search.as_mut() {
+            query.pop();
+        }
+        self.apply_search();
     }
 
     fn start_search(&mut self) {
@@ -1315,6 +1325,39 @@ mod tests {
         assert!(!app.search_active);
         assert!(app.search.is_none());
         assert_eq!(app.rows.len(), 3);
+    }
+
+    #[test]
+    fn backspace_edits_the_search_query() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(0);
+        app.patches = vec![
+            patch("[PATCH] mm: fix foo", "a@x"),
+            patch("[PATCH] net: bar", "b@x"),
+            patch("[PATCH] mm: other", "c@x"),
+        ];
+        app.all_loaded = true; // don't kick off network paging in the test
+        app.rebuild_view();
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        app.handle_crossterm(key('/'));
+        app.handle_crossterm(key('m'));
+        app.handle_crossterm(key('e'));
+        app.handle_crossterm(key('t'));
+        assert_eq!(app.search.as_deref(), Some("met"));
+
+        // Plain Backspace removes the last character and re-filters live.
+        app.handle_crossterm(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(app.search.as_deref(), Some("me"));
+        assert!(app.search_active, "editing must not exit search mode");
+
+        // Ctrl-H (how some terminals report backspace) also erases.
+        app.handle_crossterm(Event::Key(KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.search.as_deref(), Some("m"));
+        assert_eq!(app.rows.len(), 2); // both "mm:" subjects match "m"
     }
 
     #[test]
