@@ -33,4 +33,6 @@ merged_markers = [
 	"^\\s*thanks,?\\s+(applied|merged|pushed)\\b",
 	# "patchset applied", "series merged" as a line-leading statement.
 	"^\\s*(patch(set|es)?|series)\\s+(applied|merged)(,?\\s+thanks|\\s+to\\s+\\S+|[.!]?\\s*$)",
+	# "Thanks ... merged" / "Thanks ... pushed"
+	"^\\s*(T|t)hanks.*(merged|applied|pushed)",
 ]
