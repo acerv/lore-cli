@@ -414,8 +414,16 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: Rect) {
     // While typing a search, the input takes over the status bar.
     if app.active_tab == 0 && app.search_active {
         let query = app.search.as_deref().unwrap_or("");
+        // Searching may still be paging in patches from later pages; show a
+        // spinner so a "no results yet" state doesn't look final.
+        let hint = if app.loading_more || app.loading_patches {
+            let spin = SPINNER[(app.tick % 4) as usize];
+            format!("   (searching all patches {spin})")
+        } else {
+            String::new()
+        };
         frame.render_widget(
-            Paragraph::new(format!(" /{query}")).style(Style::default().fg(Color::Yellow)),
+            Paragraph::new(format!(" /{query}{hint}")).style(Style::default().fg(Color::Yellow)),
             area,
         );
         let cursor_x = (area.x + 2 + query.chars().count() as u16).min(area.right().saturating_sub(1));

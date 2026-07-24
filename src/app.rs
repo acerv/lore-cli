@@ -384,6 +384,8 @@ impl App {
             }
             self.patches.append(&mut more);
             self.rebuild_view();
+            // Keep walking pages while a search is active so all matches load.
+            self.continue_search_loading();
         }
     }
 
@@ -951,6 +953,25 @@ impl App {
         self.rebuild_rows();
         let selection = if self.rows.is_empty() { None } else { Some(0) };
         self.list_state.select(selection);
+        // A subject filter only sees patches already fetched. Kick off paging
+        // so matches living on not-yet-loaded pages surface too.
+        self.continue_search_loading();
+    }
+
+    /// True when a non-empty subject filter is narrowing the list.
+    fn search_filter_active(&self) -> bool {
+        self.search.as_ref().is_some_and(|q| !q.is_empty())
+    }
+
+    /// While a search filter is active, fetch the next page so matches on
+    /// not-yet-loaded patches appear without manual paging. `load_more`
+    /// no-ops when a fetch is already in flight or the list is fully loaded,
+    /// so calling this eagerly is safe; `on_more_loaded` re-invokes it to walk
+    /// through every remaining page.
+    fn continue_search_loading(&mut self) {
+        if self.search_filter_active() {
+            self.load_more();
+        }
     }
 
     fn handle_thread_key(&mut self, key: KeyEvent, ctrl: bool) {
@@ -1311,6 +1332,7 @@ mod tests {
             patch("[PATCH] net: bar", "b@x"),
             patch("[PATCH] mm: other", "c@x"),
         ];
+        app.all_loaded = true; // filter-only test: don't kick off network paging
         app.rebuild_view();
         let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 
@@ -1360,6 +1382,32 @@ mod tests {
         assert_eq!(app.rows.len(), 2); // both "mm:" subjects match "m"
     }
 
+    #[tokio::test]
+    async fn search_triggers_paging_for_unloaded_patches() {
+        use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(0);
+        // A full first page (page_size long) with no match yet loaded; more
+        // pages exist on the server (all_loaded stays false).
+        app.patches = (0..app.config.ui.page_size)
+            .map(|i| patch("[PATCH] misc", &format!("p{i}@x")))
+            .collect();
+        app.all_loaded = false;
+        app.rebuild_view();
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        assert!(!app.loading_more);
+        app.handle_crossterm(key('/'));
+        app.handle_crossterm(key('n'));
+        app.handle_crossterm(key('f'));
+        app.handle_crossterm(key('s'));
+        // No "nfs" match is loaded yet, so the search must have started fetching
+        // the next page rather than silently reporting zero results.
+        assert!(
+            app.loading_more,
+            "an active search must page in not-yet-loaded patches"
+        );
+    }
+
     #[test]
     fn esc_from_search_keeps_selected_patch() {
         use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -1369,6 +1417,7 @@ mod tests {
             patch("[PATCH] net: bar", "b@x"),
             patch("[PATCH] mm: other", "c@x"),
         ];
+        app.all_loaded = true; // filter-only test: don't kick off network paging
         app.rebuild_view();
         let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 
@@ -1395,6 +1444,7 @@ mod tests {
         app.patches = (0..40)
             .map(|i| patch(&format!("[PATCH] item {i}"), &format!("id{i}@x")))
             .collect();
+        app.all_loaded = true; // filter-only test: don't kick off network paging
         app.rebuild_view();
 
         let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -1428,6 +1478,7 @@ mod tests {
             patch("[PATCH 1/2] feature xyz: part one", "20240101-feat-1-abc@x"),
             patch("[PATCH 2/2] feature xyz: part two", "20240101-feat-2-abc@x"),
         ];
+        app.all_loaded = true; // filter-only test: don't kick off network paging
         app.rebuild_view();
         // Collapsed by default: only the cover-letter head is a row.
         assert_eq!(app.rows.len(), 1);
